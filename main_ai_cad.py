@@ -17,8 +17,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QWidget, QSplitter, QTreeWidget,
     QTreeWidgetItem, QLabel, QStatusBar, QComboBox, QMessageBox, QDialog
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QByteArray, QUrl
 from PyQt6.QtGui import QTextCursor, QColor
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from autocad_controller import AutoCADController
 from config_manager import ConfigManager
@@ -100,7 +101,19 @@ class AICADPlugin(QMainWindow):
         
         self.is_processing = False
         self.ai_thread = None
-        
+        self._user_requested_stop = False  # 用户点击停止后忽略后续AI结果
+        self._current_reply = None  # 当前异步 HTTP 请求，用于中止
+        self._network_manager = QNetworkAccessManager(self)
+        # CAD 命令队列：用 QTimer 间隔执行，避免主线程长时间阻塞，便于点击停止
+        self._cad_command_queue = []
+        self._cad_timer = QTimer(self)
+        self._cad_timer.setSingleShot(True)
+        self._cad_timer.timeout.connect(self._execute_next_cad_command)
+        self._cad_worker = None  # 当前执行 CAD 命令的工作线程，点停止时对其 stop()
+        # 对话历史，用于多轮上下文（仅保留最近 N 条，避免 token 过多）
+        self._chat_history = []
+        self._chat_history_max = 20
+
         # 初始化UI
         self.init_ui()
         
@@ -612,24 +625,43 @@ class AICADPlugin(QMainWindow):
             self.process_with_ai(command)
     
     def stop_processing(self):
-        """停止当前处理"""
+        """停止当前处理：1) 终止AI对话或中止网络请求 2) 取消CAD当前命令"""
+        self._user_requested_stop = True
         self.add_chat_message("系统", "⏹ 正在停止...")
-        
+
+        # 1a. 若有正在进行的异步 HTTP 请求，直接中止（不阻塞界面）
+        if self._current_reply is not None:
+            try:
+                self._current_reply.abort()
+            except Exception:
+                pass
+            self._current_reply = None
+
+        # 1b. 若有正在排队的 CAD 命令或正在执行的工作线程，清空并停止
+        self._cad_command_queue.clear()
+        self._cad_timer.stop()
+        if self._cad_worker is not None and self._cad_worker.isRunning():
+            self._cad_worker.stop()
+        self._cad_finish(was_stopped=True)
+
+        # 1c. 若为线程方式（本地模型），请求工作线程停止
         if self.ai_thread and self.ai_thread.isRunning():
             self.ai_thread.stop()
             self.ai_thread.wait(1000)
-        
+
+        # 2. 取消 CAD 当前正在执行的命令
         self.acad.cancel_command()
-        
+
         self.is_processing = False
         self.set_send_button_state(False)
         self.add_chat_message("系统", "✓ 已停止")
         self.reset_status()
     
     def set_send_button_state(self, is_processing: bool):
-        """设置发送按钮状态"""
+        """设置发送按钮状态：处理中显示红色方形停止按钮"""
         if is_processing:
             self.send_button.setText("■ 停止")
+            self.send_button.setFixedSize(80, 36)
             self.send_button.setStyleSheet("""
                 QPushButton {
                     background-color: #e74c3c;
@@ -645,6 +677,7 @@ class AICADPlugin(QMainWindow):
             """)
         else:
             self.send_button.setText("发送 ➤")
+            self.send_button.setFixedWidth(80)
             self.send_button.setStyleSheet("")
         self.input_field.setEnabled(not is_processing)
     
@@ -655,32 +688,72 @@ class AICADPlugin(QMainWindow):
         self.chat_display.moveCursor(QTextCursor.MoveOperation.End)
     
     def process_with_ai(self, command):
-        """使用AI处理命令"""
+        """使用AI处理命令（异步网络请求，不阻塞界面）"""
         try:
+            # 每次新请求前重置“用户已停止”标记，避免上次点停止导致本次响应被丢弃
+            self._user_requested_stop = False
+
             self.is_processing = True
             self.set_send_button_state(True)
-            
+
             self.status_indicator.set_status("processing")
             self.status_label.setText("AI处理中...")
             self.update_status_bar("⏳ AI正在思考，请稍候...")
             self.add_chat_message("系统", "⏳ 正在处理您的请求...")
-            
-            self.ai_thread = AIProcessingThread(self.ai_model, command)
+
+            self._pending_user_message = command  # 用于收到回复后只追加 assistant 到历史
+            # 发送时就把用户消息写入历史，这样即使用户点停止，下一轮“请继续”仍有上下文
+            self._chat_history.append({"role": "user", "content": command})
+            if len(self._chat_history) > self._chat_history_max:
+                self._chat_history = self._chat_history[-self._chat_history_max:]
+
+            params = getattr(self.ai_model, "get_request_params", None)
+            if callable(params):
+                req = self.ai_model.get_request_params(command, None, self._chat_history)
+                if req is not None:
+                    url, headers, body = req
+                    request = QNetworkRequest(QUrl(url))
+                    for k, v in (headers or {}).items():
+                        request.setRawHeader(k.encode("utf-8"), v.encode("utf-8"))
+                    self._current_reply = self._network_manager.post(request, QByteArray(body))
+                    self._current_reply.finished.connect(self._on_ai_network_finished)
+                    return
+            # 本地模型等无 get_request_params：仍用线程（本地逻辑很快，几乎不阻塞）
+            self.ai_thread = AIProcessingThread(self.ai_model, command, self._chat_history)
             self.ai_thread.result_ready.connect(self.on_ai_result)
             self.ai_thread.finished.connect(self.on_ai_finished)
             self.ai_thread.start()
-            
+
         except Exception as e:
             self.is_processing = False
             self.set_send_button_state(False)
             self.add_chat_message("系统", f"❌ 处理失败: {str(e)}")
             self.update_status_bar("❌ 处理失败")
             self.reset_status()
+
+    def _on_ai_network_finished(self):
+        """异步 AI 请求完成（主线程事件循环回调，界面不卡）"""
+        reply = self.sender()
+        if not isinstance(reply, QNetworkReply):
+            return
+        try:
+            reply.deleteLater()
+            self._current_reply = None
+            if self._user_requested_stop:
+                return
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                err_msg = reply.errorString() or "网络错误"
+                self.on_ai_result({"response": err_msg, "commands": []})
+                return
+            data = reply.readAll().data()
+            result = self.ai_model.parse_response(data)
+            self.on_ai_result(result)
+        except Exception as e:
+            if not self._user_requested_stop:
+                self.on_ai_result({"response": f"处理响应失败: {str(e)}", "commands": []})
     
     def on_ai_finished(self):
-        """AI处理完成"""
-        self.is_processing = False
-        self.set_send_button_state(False)
+        """AI 线程结束（此时可能仍在执行 CAD 命令，不在这里恢复按钮）"""
         self.input_field.setFocus()
     
     def reset_status(self):
@@ -693,28 +766,68 @@ class AICADPlugin(QMainWindow):
             self.status_label.setText("未连接")
     
     def on_ai_result(self, result):
-        """处理AI结果"""
+        """处理AI结果；若用户已点击停止则不再处理并恢复按钮"""
+        commands = result.get('commands', [])
         try:
-            self.add_chat_message("AI", result.get('response', ''))
-            
-            commands = result.get('commands', [])
+            if self._user_requested_stop:
+                return
+
+            response_text = result.get('response', '')
+            self.add_chat_message("AI", response_text)
+
+            # 仅追加 AI 回复到对话历史（用户消息已在发送时写入，避免点停止后丢失上下文）
+            self._chat_history.append({"role": "assistant", "content": response_text})
+            if len(self._chat_history) > self._chat_history_max:
+                self._chat_history = self._chat_history[-self._chat_history_max:]
+            self._pending_user_message = None
+
             if commands:
                 self.add_chat_message("系统", f"🔧 准备执行命令: {', '.join(commands)}")
-                self.update_status_bar("🔧 正在执行AutoCAD命令...")
-                
-                for cmd in commands:
-                    if not self.is_processing:
-                        break
-                    self.execute_autocad_command(cmd)
-                
-                self.add_chat_message("系统", "✓ 命令执行完成")
-            
+                self.update_status_bar("🔧 正在执行AutoCAD命令...（可随时点停止）")
+                self._cad_command_queue.clear()
+                self._cad_timer.stop()
+                if self._cad_worker and self._cad_worker.isRunning():
+                    self._cad_worker.stop()
+                self._cad_worker = CADWorkerThread(list(commands))
+                self._cad_worker.done.connect(self._on_cad_worker_done)
+                self._cad_worker.start()
+                return
+
             self.update_status_bar("✓ 处理完成")
         except Exception as e:
             self.add_chat_message("系统", f"❌ 处理AI结果时出错: {str(e)}")
             self.update_status_bar("❌ 处理出错")
         finally:
-            self.reset_status()
+            if not commands:
+                self._user_requested_stop = False
+                self.is_processing = False
+                self.set_send_button_state(False)
+                self.reset_status()
+
+    def _execute_next_cad_command(self):
+        """（已改用 CADWorkerThread，此处仅作兼容保留）"""
+        self._cad_finish()
+
+    def _on_cad_worker_done(self, stopped: bool):
+        """CAD 工作线程结束（全部执行完或被用户停止）"""
+        self._cad_worker = None
+        self._cad_finish(was_stopped=stopped)
+
+    def _cad_finish(self, was_stopped=None):
+        """CAD 命令执行完毕或用户停止后的收尾。was_stopped 为 True 表示用户点击了停止。"""
+        if was_stopped is None:
+            was_stopped = self._user_requested_stop
+        if self.is_processing and not was_stopped:
+            self.add_chat_message("系统", "✓ 命令执行完成")
+        self._cad_command_queue.clear()
+        self._cad_timer.stop()
+        self._cad_worker = None
+        self._user_requested_stop = False
+        self.is_processing = False
+        self.set_send_button_state(False)
+        self.reset_status()
+        if not was_stopped:
+            self.update_status_bar("✓ 处理完成")
     
     def execute_direct_command(self, command):
         """执行直接命令"""
@@ -731,26 +844,26 @@ class AICADPlugin(QMainWindow):
             self.execute_autocad_command(command)
             self.add_chat_message("系统", f"执行功能: {item.text(0)}")
     
-    def execute_autocad_command(self, command):
-        """执行AutoCAD命令"""
+    def execute_autocad_command(self, command, delay=0.5):
+        """执行AutoCAD命令；delay 为发送后等待时间（秒），队列执行时用较短 delay 便于响应停止"""
         try:
             if not self.acad.is_connected:
                 self.connect_to_acad()
-            
+
             if self.acad.is_connected:
                 # 显示执行中状态
                 self.update_status_bar(f"正在执行命令: {command}")
-                
+
                 # 执行命令
-                result = self.acad.send_command(command)
+                result = self.acad.send_command(command, delay=delay)
                 
                 # 记录命令历史
                 self.add_history_command(command, result)
-                
-                # 显示执行结果
-                if result:
+
+                # 仅在有实质内容时显示（不刷“命令执行结果: True”）
+                if result is not None and result is not True and result is not False:
                     self.add_chat_message("系统", f"命令执行结果: {result}")
-                
+
                 self.update_status_bar(f"命令执行成功: {command}")
             else:
                 error_msg = "未连接到AutoCAD，请先连接"
@@ -795,14 +908,52 @@ class AICADPlugin(QMainWindow):
 
 
 
+class CADWorkerThread(QThread):
+    """在独立线程中执行 CAD 命令队列，主线程不阻塞，停止按钮随时可点。"""
+    done = pyqtSignal(bool)  # True=用户停止, False=全部执行完
+
+    def __init__(self, commands):
+        super().__init__()
+        self._commands = list(commands)
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        import pythoncom
+        pythoncom.CoInitialize()
+        acad = AutoCADController()
+        try:
+            if not acad.connect():
+                self.done.emit(True)
+                return
+            for cmd in self._commands:
+                if self._stop:
+                    acad.cancel_command()
+                    break
+                acad.send_command(cmd, delay=0.25)
+            self.done.emit(self._stop)
+        except Exception as e:
+            print(f"CADWorkerThread 异常: {e}")
+            self.done.emit(True)
+        finally:
+            try:
+                acad.disconnect()
+            except Exception:
+                pass
+            pythoncom.CoUninitialize()
+
+
 class AIProcessingThread(QThread):
-    """AI处理线程"""
+    """AI处理线程（用于本地模型等无 get_request_params 的情况）"""
     result_ready = pyqtSignal(dict)
-    
-    def __init__(self, ai_model, command):
+
+    def __init__(self, ai_model, command, history=None):
         super().__init__()
         self.ai_model = ai_model
         self.command = command
+        self.history = history or []
         self._stopped = False
     
     def stop(self):
