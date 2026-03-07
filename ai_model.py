@@ -269,17 +269,25 @@ class LMStudioModel(AIModel):
         if not self.endpoint:
             self.endpoint = "http://localhost:1234/v1"
 
-    _SYSTEM_PROMPT = """你是一个AutoCAD智能助手。请根据用户的请求进行回复：
+    _SYSTEM_PROMPT = """你是一个AutoCAD智能助手。你必须严格返回 JSON，不要返回纯文本。
 
-1. 如果用户只是问候或闲聊，请自然回复
-2. 如果用户询问AutoCAD相关问题，请详细解答
-3. 如果用户要求执行CAD操作（如"画一个圆形"），请返回JSON格式：{"commands": ["命令"], "response": "说明"}
-4. 如果用户没有明确要求执行操作，请只返回自然语言回复
+统一输出格式：
+{
+  "intent": "chat" | "command",
+  "response": "给用户显示的自然语言",
+  "commands": ["AutoCAD命令1", "AutoCAD命令2"]
+}
+
+规则：
+1) 仅当用户明确要求“立即执行CAD操作”时，intent=command，并给出 commands。
+2) 问候、咨询、解释、教学、问答、方案讨论，一律 intent=chat，commands 必须为空数组。
+3) 如果用户语义不清晰，默认 intent=chat，并在 response 里追问澄清，不要给 commands。
+4) command 模式下，response 简短说明将执行什么；chat 模式下，正常回答问题。
 
 示例：
-- 用户："你好" -> 回复："你好！我是AutoCAD助手，有什么可以帮助您的吗？"
-- 用户："如何画圆？" -> 回复："画圆可以使用CIRCLE命令，需要指定圆心和半径"
-- 用户："画一个圆形" -> 回复：{"commands": ["CIRCLE"], "response": "好的，我将为您绘制圆形"}"""
+- 用户："你好" -> {"intent":"chat","response":"你好！我是AutoCAD助手，有什么可以帮助您的吗？","commands":[]}
+- 用户："如何画圆？" -> {"intent":"chat","response":"画圆可用 CIRCLE 命令，先指定圆心，再输入半径或直径。","commands":[]}
+- 用户："绘制一个圆形" -> {"intent":"command","response":"好的，我将为您启动画圆命令。","commands":["CIRCLE"]}"""
 
     def get_request_params(self, command: str, context: Optional[Dict[str, Any]] = None, history: Optional[list] = None) -> Optional[Tuple[str, Dict[str, str], bytes]]:
         if not self.endpoint:
@@ -325,11 +333,21 @@ class LMStudioModel(AIModel):
             # 稳健解析：先尝试整段为 JSON，再尝试提取首段完整 JSON 对象（支持 response 内多字符、引号、括号）
             command_data = _extract_command_json(assistant_message)
             if command_data is not None:
+                intent = command_data.get("intent", "chat")
+                if intent not in ("chat", "command"):
+                    intent = "chat"
+                commands = command_data.get("commands", [])
+                if not isinstance(commands, list):
+                    commands = []
+                # 安全兜底：非 command 意图禁止下发命令
+                if intent != "command":
+                    commands = []
                 return {
+                    "intent": intent,
                     "response": command_data.get("response", assistant_message),
-                    "commands": command_data.get("commands", [])
+                    "commands": commands
                 }
-            return {"response": assistant_message, "commands": []}
+            return {"intent": "chat", "response": assistant_message, "commands": []}
         except json.JSONDecodeError as e:
             return {"response": f"JSON解析失败: {str(e)}", "commands": []}
         except Exception as e:

@@ -102,6 +102,7 @@ class AICADPlugin(QMainWindow):
         self.is_processing = False
         self.ai_thread = None
         self._user_requested_stop = False  # 用户点击停止后忽略后续AI结果
+        self._ignore_ai_result = False  # 停止后丢弃本轮（延迟返回）的AI结果，直到下一次发送
         self._current_reply = None  # 当前异步 HTTP 请求，用于中止
         self._network_manager = QNetworkAccessManager(self)
         # CAD 命令队列：用 QTimer 间隔执行，避免主线程长时间阻塞，便于点击停止
@@ -111,10 +112,14 @@ class AICADPlugin(QMainWindow):
         self._cad_timer.timeout.connect(self._execute_next_cad_command)
         self._cad_worker = None  # 当前执行 CAD 命令的工作线程，点停止时对其 stop()
         self._cad_executor = None  # 记录最近一次发送CAD命令的控制器（主控制器或worker控制器）
+        self._cad_execution_active = False  # 当前是否确实处于CAD命令执行阶段
         # 对话历史，用于多轮上下文（仅保留最近 N 条，避免 token 过多）
         self._chat_history = []
         self._chat_history_max = 20
         self._last_user_input = ""  # 最近一次用户输入，用于判定是否应执行CAD命令
+        self._ignore_ai_result = False  # 停止后忽略迟到结果
+        self._request_seq = 0  # 递增请求序号
+        self._active_request_id = 0  # 当前有效请求ID（仅此ID可触发执行）
 
         # 初始化UI
         self.init_ui()
@@ -619,19 +624,24 @@ class AICADPlugin(QMainWindow):
             return
 
         self._last_user_input = command
+        self._ignore_ai_result = False  # 新请求开始，允许接收本轮AI结果
+        self._request_seq += 1
+        self._active_request_id = self._request_seq
         self.add_chat_message("用户", command)
         self.input_field.clear()
 
         if command.startswith("/"):
             self.execute_direct_command(command[1:])
         else:
-            self.process_with_ai(command)
+            self.process_with_ai(command, request_id=self._active_request_id)
     
     def stop_processing(self):
         """停止当前处理：1) 终止AI对话或中止网络请求 2) 取消CAD当前命令"""
         import time
 
         self._user_requested_stop = True
+        self._ignore_ai_result = True  # 停止后彻底丢弃本轮任何迟到结果
+        self._active_request_id = self._request_seq + 1  # 失效当前及更早请求结果，防串台
         self.add_chat_message("系统", "⏹ 正在停止...")
 
         # 1a. 若有正在进行的异步 HTTP 请求，直接中止（不阻塞界面）
@@ -653,16 +663,18 @@ class AICADPlugin(QMainWindow):
             self.ai_thread.stop()
             self.ai_thread.wait(1000)
 
-        # 2. 强制取消 CAD 当前正在执行的命令（优先取消实际发送命令的控制器）
-        target_acad = self._cad_executor if self._cad_executor is not None else self.acad
-        cancelled = target_acad.force_cancel_command(rounds=10, interval=0.08)
-        # 同时对主控制器再补一次取消，覆盖跨线程/句柄切换场景
-        if target_acad is not self.acad:
-            cancelled = self.acad.force_cancel_command(rounds=4, interval=0.06) or cancelled
+        # 2. 仅当“当前确有CAD命令执行”时才发送取消，避免对纯对话误发控制指令
+        cancelled = True
+        should_cancel_cad = self._cad_execution_active or (self._cad_worker is not None and self._cad_worker.isRunning())
+        if should_cancel_cad:
+            target_acad = self._cad_executor if self._cad_executor is not None else self.acad
+            cancelled = target_acad.force_cancel_command(rounds=10, interval=0.08)
+            # 同时对主控制器再补一次取消，覆盖跨线程/句柄切换场景
+            if target_acad is not self.acad:
+                cancelled = self.acad.force_cancel_command(rounds=4, interval=0.06) or cancelled
 
-        if not cancelled:
-            self.add_chat_message("系统", "⚠ 未确认CAD已响应取消，建议手动按一次 ESC")
-
+            if not cancelled:
+                self.add_chat_message("系统", "⚠ 未确认CAD已响应取消，建议手动按一次 ESC")
         # 3. 统一收尾
         self._cad_finish(was_stopped=True)
         self.is_processing = False
@@ -700,7 +712,7 @@ class AICADPlugin(QMainWindow):
         self.chat_display.append(f"[{timestamp}] {sender}: {message}")
         self.chat_display.moveCursor(QTextCursor.MoveOperation.End)
     
-    def process_with_ai(self, command):
+    def process_with_ai(self, command, request_id=None):
         """使用AI处理命令（异步网络请求，不阻塞界面）"""
         try:
             # 每次新请求前重置“用户已停止”标记，避免上次点停止导致本次响应被丢弃
@@ -729,10 +741,12 @@ class AICADPlugin(QMainWindow):
                     for k, v in (headers or {}).items():
                         request.setRawHeader(k.encode("utf-8"), v.encode("utf-8"))
                     self._current_reply = self._network_manager.post(request, QByteArray(body))
+                    self._current_reply.setProperty("request_id", int(request_id or self._active_request_id))
                     self._current_reply.finished.connect(self._on_ai_network_finished)
                     return
             # 本地模型等无 get_request_params：仍用线程（本地逻辑很快，几乎不阻塞）
             self.ai_thread = AIProcessingThread(self.ai_model, command, self._chat_history)
+            self.ai_thread.request_id = int(request_id or self._active_request_id)
             self.ai_thread.result_ready.connect(self.on_ai_result)
             self.ai_thread.finished.connect(self.on_ai_finished)
             self.ai_thread.start()
@@ -750,20 +764,25 @@ class AICADPlugin(QMainWindow):
         if not isinstance(reply, QNetworkReply):
             return
         try:
+            request_id = int(reply.property("request_id") or 0)
             reply.deleteLater()
             self._current_reply = None
-            if self._user_requested_stop:
+            if self._user_requested_stop or self._ignore_ai_result:
+                return
+            if request_id != self._active_request_id:
                 return
             if reply.error() != QNetworkReply.NetworkError.NoError:
                 err_msg = reply.errorString() or "网络错误"
-                self.on_ai_result({"response": err_msg, "commands": []})
+                self.on_ai_result({"response": err_msg, "commands": [], "request_id": request_id})
                 return
             data = reply.readAll().data()
             result = self.ai_model.parse_response(data)
+            if isinstance(result, dict):
+                result["request_id"] = request_id
             self.on_ai_result(result)
         except Exception as e:
             if not self._user_requested_stop:
-                self.on_ai_result({"response": f"处理响应失败: {str(e)}", "commands": []})
+                self.on_ai_result({"response": f"处理响应失败: {str(e)}", "commands": [], "request_id": self._active_request_id})
     
     def on_ai_finished(self):
         """AI 线程结束（此时可能仍在执行 CAD 命令，不在这里恢复按钮）"""
@@ -801,13 +820,17 @@ class AICADPlugin(QMainWindow):
         return any(cmd in t for cmd in direct_cmds)
     
     def on_ai_result(self, result):
-        """处理AI结果；若用户已点击停止则不再处理并恢复按钮"""
+        """处理AI结果；若用户已点击停止或结果已过期则不再处理"""
         commands = result.get('commands', [])
         try:
-            if self._user_requested_stop:
+            result_request_id = int(result.get('request_id', self._active_request_id)) if isinstance(result, dict) else self._active_request_id
+            if self._user_requested_stop or self._ignore_ai_result:
+                return
+            if result_request_id != self._active_request_id:
                 return
 
             response_text = result.get('response', '')
+            intent = result.get('intent', 'chat')
             self.add_chat_message("AI", response_text)
 
             # 仅追加 AI 回复到对话历史（用户消息已在发送时写入，避免点停止后丢失上下文）
@@ -816,9 +839,11 @@ class AICADPlugin(QMainWindow):
                 self._chat_history = self._chat_history[-self._chat_history_max:]
             self._pending_user_message = None
 
-            if commands and self._is_operation_intent(self._last_user_input):
+            # 关键：仅当大模型明确返回 intent=command 时才执行
+            if intent == 'command' and commands:
                 self.add_chat_message("系统", f"🔧 准备执行命令: {', '.join(commands)}")
                 self.update_status_bar("🔧 正在执行AutoCAD命令...（可随时点停止）")
+                self._cad_execution_active = True
                 self._cad_command_queue.clear()
                 self._cad_timer.stop()
                 if self._cad_worker and self._cad_worker.isRunning():
@@ -829,15 +854,17 @@ class AICADPlugin(QMainWindow):
                 self._cad_worker.start()
                 return
 
-            if commands and not self._is_operation_intent(self._last_user_input):
-                self.add_chat_message("系统", "💬 当前为对话模式，已阻止自动执行CAD命令")
+            if commands and intent != 'command':
+                self.add_chat_message("系统", "💬 大模型判定为对话，已阻止命令执行")
 
             self.update_status_bar("✓ 处理完成")
         except Exception as e:
             self.add_chat_message("系统", f"❌ 处理AI结果时出错: {str(e)}")
             self.update_status_bar("❌ 处理出错")
         finally:
-            if (not commands) or (not self._is_operation_intent(self._last_user_input)):
+            intent = result.get('intent', 'chat') if isinstance(result, dict) else 'chat'
+            if (not commands) or (intent != 'command'):
+                self._cad_execution_active = False
                 self._user_requested_stop = False
                 self.is_processing = False
                 self.set_send_button_state(False)
@@ -866,6 +893,7 @@ class AICADPlugin(QMainWindow):
         self._cad_command_queue.clear()
         self._cad_timer.stop()
         self._cad_worker = None
+        self._cad_execution_active = False
         self._user_requested_stop = False
         self.is_processing = False
         self.set_send_button_state(False)
@@ -1001,6 +1029,7 @@ class AIProcessingThread(QThread):
         self.command = command
         self.history = history or []
         self._stopped = False
+        self.request_id = 0
     
     def stop(self):
         """停止线程"""
@@ -1010,15 +1039,19 @@ class AIProcessingThread(QThread):
         """运行线程"""
         try:
             result = self.ai_model.process_command(self.command)
+            if not isinstance(result, dict):
+                result = {"response": str(result), "commands": []}
+            result["request_id"] = int(self.request_id or 0)
             if not self._stopped:
                 self.result_ready.emit(result)
             else:
-                self.result_ready.emit({"response": "已取消", "commands": []})
+                self.result_ready.emit({"response": "已取消", "commands": [], "request_id": int(self.request_id or 0)})
         except Exception as e:
             if not self._stopped:
                 self.result_ready.emit({
                     "response": f"处理失败: {str(e)}",
-                    "commands": []
+                    "commands": [],
+                    "request_id": int(self.request_id or 0)
                 })
 
 def main():
