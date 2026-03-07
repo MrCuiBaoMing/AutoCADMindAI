@@ -110,9 +110,11 @@ class AICADPlugin(QMainWindow):
         self._cad_timer.setSingleShot(True)
         self._cad_timer.timeout.connect(self._execute_next_cad_command)
         self._cad_worker = None  # 当前执行 CAD 命令的工作线程，点停止时对其 stop()
+        self._cad_executor = None  # 记录最近一次发送CAD命令的控制器（主控制器或worker控制器）
         # 对话历史，用于多轮上下文（仅保留最近 N 条，避免 token 过多）
         self._chat_history = []
         self._chat_history_max = 20
+        self._last_user_input = ""  # 最近一次用户输入，用于判定是否应执行CAD命令
 
         # 初始化UI
         self.init_ui()
@@ -615,10 +617,11 @@ class AICADPlugin(QMainWindow):
         command = self.input_field.text().strip()
         if not command:
             return
-        
+
+        self._last_user_input = command
         self.add_chat_message("用户", command)
         self.input_field.clear()
-        
+
         if command.startswith("/"):
             self.execute_direct_command(command[1:])
         else:
@@ -626,6 +629,8 @@ class AICADPlugin(QMainWindow):
     
     def stop_processing(self):
         """停止当前处理：1) 终止AI对话或中止网络请求 2) 取消CAD当前命令"""
+        import time
+
         self._user_requested_stop = True
         self.add_chat_message("系统", "⏹ 正在停止...")
 
@@ -637,24 +642,32 @@ class AICADPlugin(QMainWindow):
                 pass
             self._current_reply = None
 
-        # 1b. 若有正在排队的 CAD 命令或正在执行的工作线程，清空并停止
+        # 1b. 若有正在执行的 CAD 工作线程，先请求停止
         self._cad_command_queue.clear()
         self._cad_timer.stop()
         if self._cad_worker is not None and self._cad_worker.isRunning():
             self._cad_worker.stop()
-        self._cad_finish(was_stopped=True)
 
         # 1c. 若为线程方式（本地模型），请求工作线程停止
         if self.ai_thread and self.ai_thread.isRunning():
             self.ai_thread.stop()
             self.ai_thread.wait(1000)
 
-        # 2. 取消 CAD 当前正在执行的命令
-        self.acad.cancel_command()
+        # 2. 强制取消 CAD 当前正在执行的命令（优先取消实际发送命令的控制器）
+        target_acad = self._cad_executor if self._cad_executor is not None else self.acad
+        cancelled = target_acad.force_cancel_command(rounds=10, interval=0.08)
+        # 同时对主控制器再补一次取消，覆盖跨线程/句柄切换场景
+        if target_acad is not self.acad:
+            cancelled = self.acad.force_cancel_command(rounds=4, interval=0.06) or cancelled
 
+        if not cancelled:
+            self.add_chat_message("系统", "⚠ 未确认CAD已响应取消，建议手动按一次 ESC")
+
+        # 3. 统一收尾
+        self._cad_finish(was_stopped=True)
         self.is_processing = False
         self.set_send_button_state(False)
-        self.add_chat_message("系统", "✓ 已停止")
+        self.add_chat_message("系统", "✓ 已停止（已请求取消CAD当前命令）")
         self.reset_status()
     
     def set_send_button_state(self, is_processing: bool):
@@ -764,6 +777,28 @@ class AICADPlugin(QMainWindow):
         else:
             self.status_indicator.set_status("disconnected")
             self.status_label.setText("未连接")
+
+    def _is_operation_intent(self, text: str) -> bool:
+        """判断用户输入是否包含“执行CAD操作”意图。"""
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+
+        # 问句/咨询默认走对话模式，不自动执行CAD命令
+        chat_markers = ["？", "?", "怎么", "如何", "为什么", "是什么", "教程", "解释", "介绍", "能否", "可以吗", "请问"]
+        if any(m in t for m in chat_markers):
+            return False
+
+        # 明确操作意图关键词
+        op_markers = [
+            "画", "绘制", "创建", "新建", "生成", "插入", "删除", "移动", "复制", "旋转", "镜像", "偏移", "修剪", "延伸", "标注", "执行", "运行", "命令"
+        ]
+        if any(m in t for m in op_markers):
+            return True
+
+        # 直接输入CAD命令也算操作意图
+        direct_cmds = ["line", "circle", "rectang", "move", "copy", "erase", "trim", "extend", "offset", "rotate", "mirror", "dimlinear"]
+        return any(cmd in t for cmd in direct_cmds)
     
     def on_ai_result(self, result):
         """处理AI结果；若用户已点击停止则不再处理并恢复按钮"""
@@ -781,7 +816,7 @@ class AICADPlugin(QMainWindow):
                 self._chat_history = self._chat_history[-self._chat_history_max:]
             self._pending_user_message = None
 
-            if commands:
+            if commands and self._is_operation_intent(self._last_user_input):
                 self.add_chat_message("系统", f"🔧 准备执行命令: {', '.join(commands)}")
                 self.update_status_bar("🔧 正在执行AutoCAD命令...（可随时点停止）")
                 self._cad_command_queue.clear()
@@ -789,16 +824,20 @@ class AICADPlugin(QMainWindow):
                 if self._cad_worker and self._cad_worker.isRunning():
                     self._cad_worker.stop()
                 self._cad_worker = CADWorkerThread(list(commands))
+                self._cad_worker.controller_ready.connect(self._on_cad_worker_controller_ready)
                 self._cad_worker.done.connect(self._on_cad_worker_done)
                 self._cad_worker.start()
                 return
+
+            if commands and not self._is_operation_intent(self._last_user_input):
+                self.add_chat_message("系统", "💬 当前为对话模式，已阻止自动执行CAD命令")
 
             self.update_status_bar("✓ 处理完成")
         except Exception as e:
             self.add_chat_message("系统", f"❌ 处理AI结果时出错: {str(e)}")
             self.update_status_bar("❌ 处理出错")
         finally:
-            if not commands:
+            if (not commands) or (not self._is_operation_intent(self._last_user_input)):
                 self._user_requested_stop = False
                 self.is_processing = False
                 self.set_send_button_state(False)
@@ -808,9 +847,14 @@ class AICADPlugin(QMainWindow):
         """（已改用 CADWorkerThread，此处仅作兼容保留）"""
         self._cad_finish()
 
+    def _on_cad_worker_controller_ready(self, controller):
+        """收到 CAD 工作线程实际使用的控制器，停止时优先对它发送取消。"""
+        self._cad_executor = controller
+
     def _on_cad_worker_done(self, stopped: bool):
         """CAD 工作线程结束（全部执行完或被用户停止）"""
         self._cad_worker = None
+        self._cad_executor = None
         self._cad_finish(was_stopped=stopped)
 
     def _cad_finish(self, was_stopped=None):
@@ -911,6 +955,7 @@ class AICADPlugin(QMainWindow):
 class CADWorkerThread(QThread):
     """在独立线程中执行 CAD 命令队列，主线程不阻塞，停止按钮随时可点。"""
     done = pyqtSignal(bool)  # True=用户停止, False=全部执行完
+    controller_ready = pyqtSignal(object)  # 把线程内实际控制器暴露给主线程用于取消
 
     def __init__(self, commands):
         super().__init__()
@@ -928,6 +973,7 @@ class CADWorkerThread(QThread):
             if not acad.connect():
                 self.done.emit(True)
                 return
+            self.controller_ready.emit(acad)
             for cmd in self._commands:
                 if self._stop:
                     acad.cancel_command()

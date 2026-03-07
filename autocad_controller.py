@@ -9,6 +9,15 @@ import time
 from typing import Optional, List
 import logging
 
+try:
+    import win32gui
+    import win32api
+    import win32con
+except Exception:
+    win32gui = None
+    win32api = None
+    win32con = None
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -153,21 +162,107 @@ class AutoCADController:
                 success = False
         return success
     
-    def cancel_command(self):
-        """取消当前命令（通过 COM 发送 ESC）。
-        使用与 SendCommand 相同的接口，若本机 AutoCAD 不支持该 COM 接口（如部分 LMS Tech 版本），
-        取消失败属正常，仅记入 DEBUG 日志，不刷 WARNING。"""
-        if not self.is_connected or not self.acad_app:
-            return
+    def _activate_acad_window(self) -> bool:
+        """尝试激活 AutoCAD 窗口。仅在需要键盘兜底时使用。"""
+        if not self.acad_app:
+            return False
+        if win32gui is None:
+            return False
+        try:
+            hwnd = int(self.acad_app.HWND)
+            if hwnd:
+                try:
+                    win32gui.ShowWindow(hwnd, 9)  # SW_RESTORE
+                except Exception:
+                    pass
+                win32gui.SetForegroundWindow(hwnd)
+                time.sleep(0.05)
+                return True
+        except Exception as e:
+            logger.debug(f"激活AutoCAD窗口失败: {_format_com_error(e)}")
+        return False
 
-        if not self.ensure_document():
-            logger.debug("取消命令时无法获取活动文档，已跳过")
-            return
+    def _send_keyboard_cancel_to_acad(self) -> bool:
+        """键盘兜底：向 AutoCAD 窗口发送 Ctrl+C / ESC（不依赖本工具窗口焦点）。"""
+        if win32api is None or win32con is None:
+            return False
+        if not self._activate_acad_window():
+            return False
 
         try:
-            self.acad_doc.SendCommand(chr(27) + '\n')
-            self.acad_doc.SendCommand('\n')
-            logger.info("已发送取消命令 (ESC)")
+            # Ctrl down
+            win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
+            # C down/up
+            win32api.keybd_event(ord('C'), 0, 0, 0)
+            win32api.keybd_event(ord('C'), 0, win32con.KEYEVENTF_KEYUP, 0)
+            # C 再一次
+            win32api.keybd_event(ord('C'), 0, 0, 0)
+            win32api.keybd_event(ord('C'), 0, win32con.KEYEVENTF_KEYUP, 0)
+            # Ctrl up
+            win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+            time.sleep(0.03)
+
+            # ESC down/up
+            win32api.keybd_event(win32con.VK_ESCAPE, 0, 0, 0)
+            win32api.keybd_event(win32con.VK_ESCAPE, 0, win32con.KEYEVENTF_KEYUP, 0)
+            time.sleep(0.03)
+
+            logger.info("已发送键盘取消命令（Ctrl+C, Ctrl+C, ESC）")
+            return True
         except Exception as e:
-            # 与发送普通命令同一 COM 路径，若本机不支持则此处也会失败，仅记录 DEBUG 避免刷屏
-            logger.debug(f"取消命令失败: {_format_com_error(e)}")
+            logger.debug(f"发送键盘取消失败: {_format_com_error(e)}")
+            return False
+
+    def cancel_command(self) -> bool:
+        """取消当前命令（COM 方式，不依赖窗口焦点）。返回是否发送成功。"""
+        if not self.is_connected or not self.acad_app:
+            return False
+
+        try:
+            doc = self.acad_app.ActiveDocument
+        except Exception as e:
+            logger.debug(f"取消命令时获取活动文档失败: {_format_com_error(e)}")
+            return False
+
+        cancel_sequences = [
+            "\x03\x03\n",      # Ctrl+C Ctrl+C（硬取消）
+            "\x03\n",           # 再补一次 Ctrl+C
+            chr(27) + "\n",     # ESC
+            "\n",               # 回车，清理残留提示
+        ]
+
+        sent_any = False
+        for seq in cancel_sequences:
+            try:
+                doc.SendCommand(seq)
+                sent_any = True
+                time.sleep(0.06)
+            except Exception as e:
+                logger.debug(f"发送取消序列失败: {_format_com_error(e)}")
+
+        if sent_any:
+            logger.info("已发送取消命令（COM: ^C^C/ESC）")
+        return sent_any
+
+    def force_cancel_command(self, rounds: int = 8, interval: float = 0.08) -> bool:
+        """强制取消：多轮 COM 取消；必要时使用键盘事件兜底。"""
+        success = False
+
+        # 第一阶段：COM 多轮取消
+        for _ in range(max(1, rounds)):
+            success = self.cancel_command() or success
+            time.sleep(interval)
+
+        # 第二阶段：激活 AutoCAD 并再次 COM 取消
+        if self._activate_acad_window():
+            for _ in range(3):
+                success = self.cancel_command() or success
+                time.sleep(interval)
+
+        # 第三阶段：键盘级兜底（Ctrl+C/Ctrl+C/ESC），用于某些 COM 取消无效场景
+        kb_success = False
+        for _ in range(3):
+            kb_success = self._send_keyboard_cancel_to_acad() or kb_success
+            time.sleep(interval)
+
+        return success or kb_success
