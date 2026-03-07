@@ -277,7 +277,7 @@ class LMStudioModel(AIModel):
                 "max_tokens": 500
             }
             
-            api_url = f"{self.endpoint}/chat/completions"
+            api_url = f"{self.endpoint.rstrip('/')}/chat/completions"
             print(f"[LM Studio] 发送请求到: {api_url}")
             
             response = requests.post(
@@ -289,40 +289,50 @@ class LMStudioModel(AIModel):
             print(f"[LM Studio] 收到响应，状态码: {response.status_code}")
             response.raise_for_status()
             
-            # 解析响应
             result = response.json()
-            assistant_message = result['choices'][0]['message']['content']
+            print(f"[LM Studio] 响应内容: {json.dumps(result, ensure_ascii=False)[:500]}")
             
-            # 尝试解析JSON
+            if isinstance(result, str):
+                return {"response": result, "commands": []}
+            
+            if not isinstance(result, dict):
+                return {"response": f"响应格式错误: {type(result)}", "commands": []}
+            
+            if 'choices' not in result or not result['choices']:
+                error_info = result.get('error', {})
+                if isinstance(error_info, str):
+                    error_msg = error_info
+                else:
+                    error_msg = error_info.get('message', '未知错误') if isinstance(error_info, dict) else '未知错误'
+                return {"response": f"API错误: {error_msg}", "commands": []}
+            
+            choice = result['choices'][0]
+            if isinstance(choice, dict) and 'message' in choice:
+                assistant_message = choice['message'].get('content', '')
+            elif isinstance(choice, str):
+                assistant_message = choice
+            else:
+                return {"response": f"响应格式异常: {choice}", "commands": []}
+            
             try:
-                # 尝试从响应中提取JSON
                 import re
-                json_match = re.search(r'\{[^}]*\}', assistant_message)
+                json_match = re.search(r'\{[^{}]*\}', assistant_message)
                 if json_match:
                     command_data = json.loads(json_match.group())
-                    commands = command_data.get('commands', [])
-                    response_text = command_data.get('response', assistant_message)
                     return {
-                        "response": response_text,
-                        "commands": commands
+                        "response": command_data.get('response', assistant_message),
+                        "commands": command_data.get('commands', [])
                     }
-                else:
-                    # 如果没有JSON，返回原始响应
-                    return {
-                        "response": assistant_message,
-                        "commands": []
-                    }
+                return {"response": assistant_message, "commands": []}
             except json.JSONDecodeError:
-                return {
-                    "response": f"AI响应: {assistant_message}",
-                    "commands": []
-                }
+                return {"response": assistant_message, "commands": []}
                 
+        except requests.exceptions.Timeout:
+            return {"response": "请求超时，请检查LM Studio是否正常运行", "commands": []}
+        except requests.exceptions.ConnectionError:
+            return {"response": "无法连接到LM Studio，请确认服务已启动", "commands": []}
         except Exception as e:
-            return {
-                "response": f"处理失败: {str(e)}",
-                "commands": []
-            }
+            return {"response": f"处理失败: {str(e)}", "commands": []}
 
 def get_ai_model(model_type: str = "local", **kwargs) -> AIModel:
     """获取AI模型实例"""

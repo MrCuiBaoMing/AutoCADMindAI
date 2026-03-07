@@ -98,6 +98,9 @@ class AICADPlugin(QMainWindow):
         self.acad = AutoCADController()
         self.config = ConfigManager()
         
+        self.is_processing = False
+        self.ai_thread = None
+        
         # 初始化UI
         self.init_ui()
         
@@ -398,12 +401,12 @@ class AICADPlugin(QMainWindow):
         self.input_field.setPlaceholderText("输入指令，例如：绘制一个圆形，半径10")
         self.input_field.returnPressed.connect(self.send_command)
         
-        send_button = QPushButton("发送 ➤")
-        send_button.clicked.connect(self.send_command)
-        send_button.setFixedWidth(80)
+        self.send_button = QPushButton("发送 ➤")
+        self.send_button.clicked.connect(self.on_send_button_clicked)
+        self.send_button.setFixedWidth(80)
         
         input_layout.addWidget(self.input_field)
-        input_layout.addWidget(send_button)
+        input_layout.addWidget(self.send_button)
         
         chat_layout.addWidget(self.chat_display)
         chat_layout.addLayout(input_layout)
@@ -587,23 +590,63 @@ class AICADPlugin(QMainWindow):
         # 展开所有节点
         self.function_tree.expandAll()
     
+    def on_send_button_clicked(self):
+        """发送/停止按钮点击"""
+        if self.is_processing:
+            self.stop_processing()
+        else:
+            self.send_command()
+    
     def send_command(self):
         """发送命令到AI和AutoCAD"""
         command = self.input_field.text().strip()
         if not command:
             return
         
-        # 添加到聊天历史
         self.add_chat_message("用户", command)
         self.input_field.clear()
         
-        # 处理命令
         if command.startswith("/"):
-            # 直接命令
             self.execute_direct_command(command[1:])
         else:
-            # AI处理
             self.process_with_ai(command)
+    
+    def stop_processing(self):
+        """停止当前处理"""
+        self.add_chat_message("系统", "⏹ 正在停止...")
+        
+        if self.ai_thread and self.ai_thread.isRunning():
+            self.ai_thread.stop()
+            self.ai_thread.wait(1000)
+        
+        self.acad.cancel_command()
+        
+        self.is_processing = False
+        self.set_send_button_state(False)
+        self.add_chat_message("系统", "✓ 已停止")
+        self.reset_status()
+    
+    def set_send_button_state(self, is_processing: bool):
+        """设置发送按钮状态"""
+        if is_processing:
+            self.send_button.setText("■ 停止")
+            self.send_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #e74c3c;
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 13px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #c0392b;
+                }
+            """)
+        else:
+            self.send_button.setText("发送 ➤")
+            self.send_button.setStyleSheet("")
+        self.input_field.setEnabled(not is_processing)
     
     def add_chat_message(self, sender, message):
         """添加聊天消息"""
@@ -614,29 +657,30 @@ class AICADPlugin(QMainWindow):
     def process_with_ai(self, command):
         """使用AI处理命令"""
         try:
-            # 显示处理中状态
+            self.is_processing = True
+            self.set_send_button_state(True)
+            
             self.status_indicator.set_status("processing")
             self.status_label.setText("AI处理中...")
             self.update_status_bar("⏳ AI正在思考，请稍候...")
             self.add_chat_message("系统", "⏳ 正在处理您的请求...")
             
-            # 禁用输入框和发送按钮
-            self.input_field.setEnabled(False)
-            
-            # 启动线程处理AI请求
             self.ai_thread = AIProcessingThread(self.ai_model, command)
             self.ai_thread.result_ready.connect(self.on_ai_result)
             self.ai_thread.finished.connect(self.on_ai_finished)
             self.ai_thread.start()
             
         except Exception as e:
+            self.is_processing = False
+            self.set_send_button_state(False)
             self.add_chat_message("系统", f"❌ 处理失败: {str(e)}")
-            self.update_status_bar(f"❌ 处理失败")
+            self.update_status_bar("❌ 处理失败")
             self.reset_status()
     
     def on_ai_finished(self):
         """AI处理完成"""
-        self.input_field.setEnabled(True)
+        self.is_processing = False
+        self.set_send_button_state(False)
         self.input_field.setFocus()
     
     def reset_status(self):
@@ -651,25 +695,25 @@ class AICADPlugin(QMainWindow):
     def on_ai_result(self, result):
         """处理AI结果"""
         try:
-            # 显示AI回复
             self.add_chat_message("AI", result.get('response', ''))
             
-            # 只有当AI明确返回命令时，才执行CAD操作
             commands = result.get('commands', [])
             if commands:
                 self.add_chat_message("系统", f"🔧 准备执行命令: {', '.join(commands)}")
-                self.update_status_bar(f"🔧 正在执行AutoCAD命令...")
+                self.update_status_bar("🔧 正在执行AutoCAD命令...")
                 
                 for cmd in commands:
+                    if not self.is_processing:
+                        break
                     self.execute_autocad_command(cmd)
                 
-                self.add_chat_message("系统", f"✓ 命令执行完成")
+                self.add_chat_message("系统", "✓ 命令执行完成")
             
             self.update_status_bar("✓ 处理完成")
-            self.reset_status()
         except Exception as e:
             self.add_chat_message("系统", f"❌ 处理AI结果时出错: {str(e)}")
             self.update_status_bar("❌ 处理出错")
+        finally:
             self.reset_status()
     
     def execute_direct_command(self, command):
@@ -759,18 +803,26 @@ class AIProcessingThread(QThread):
         super().__init__()
         self.ai_model = ai_model
         self.command = command
+        self._stopped = False
+    
+    def stop(self):
+        """停止线程"""
+        self._stopped = True
     
     def run(self):
         """运行线程"""
         try:
-            # 处理命令（不访问AutoCAD COM对象）
             result = self.ai_model.process_command(self.command)
-            self.result_ready.emit(result)
+            if not self._stopped:
+                self.result_ready.emit(result)
+            else:
+                self.result_ready.emit({"response": "已取消", "commands": []})
         except Exception as e:
-            self.result_ready.emit({
-                "response": f"处理失败: {str(e)}",
-                "commands": []
-            })
+            if not self._stopped:
+                self.result_ready.emit({
+                    "response": f"处理失败: {str(e)}",
+                    "commands": []
+                })
 
 def main():
     """主函数"""

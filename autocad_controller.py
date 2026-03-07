@@ -110,3 +110,15 @@ class AutoCADController:
             if not self.send_command(cmd, delay):
                 success = False
         return success
+    
+    def cancel_command(self):
+        """取消当前命令"""
+        if not self.is_connected or not self.acad_doc:
+            return
+        
+        try:
+            self.acad_doc.SendCommand(chr(27) + '\n')
+            self.acad_doc.SendCommand('\n')
+            logger.info("已发送取消命令 (ESC)")
+        except Exception as e:
+            logger.warning(f"取消命令失败: {e}")
