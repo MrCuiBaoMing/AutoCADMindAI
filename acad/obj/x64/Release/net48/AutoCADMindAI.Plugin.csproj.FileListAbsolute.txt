@@ -1,0 +1,5 @@
+E:\user\桌面\AutoCADMindAI\acad\obj\x64\Release\net48\AutoCADMindAI.Plugin.csproj.AssemblyReference.cache
+E:\user\桌面\AutoCADMindAI\acad\obj\x64\Release\net48\AutoCADMindAI.Plugin.GeneratedMSBuildEditorConfig.editorconfig
+E:\user\桌面\AutoCADMindAI\acad\obj\x64\Release\net48\AutoCADMindAI.Plugin.AssemblyInfoInputs.cache
+E:\user\桌面\AutoCADMindAI\acad\obj\x64\Release\net48\AutoCADMindAI.Plugin.AssemblyInfo.cs
+E:\user\桌面\AutoCADMindAI\acad\obj\x64\Release\net48\AutoCADMindAI.Plugin.csproj.CoreCompileInputs.cache

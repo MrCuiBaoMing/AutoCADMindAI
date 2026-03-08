@@ -1,0 +1,8 @@
+is_global = true
+build_property.RootNamespace = AutoCADMindAIPlugin
+build_property.ProjectDir = E:\user\桌面\AutoCADMindAI\acad\
+build_property.EnableComHosting = 
+build_property.EnableGeneratedComInterfaceComImportInterop = 
+build_property.CsWinRTUseWindowsUIXamlProjections = false
+build_property.EffectiveAnalysisLevelStyle = 
+build_property.EnableCodeStyleSeverity = 
