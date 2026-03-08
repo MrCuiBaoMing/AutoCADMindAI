@@ -39,9 +39,31 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self):
+        server: "AICADBridgeServer" = self.server.bridge_owner  # type: ignore[attr-defined]
+
         if self.path == "/health":
             self._write_json(200, {"ok": True, "service": "ai-cad-ui-bridge"})
             return
+
+        if self.path.startswith("/last_ai"):
+            since = 0
+            try:
+                if "?" in self.path:
+                    query = self.path.split("?", 1)[1]
+                    for pair in query.split("&"):
+                        if pair.startswith("since="):
+                            since = int(pair.split("=", 1)[1] or 0)
+                            break
+            except Exception:
+                since = 0
+
+            payload = {"ok": True, "has_new": False, "seq": since, "message": ""}
+            if server.on_get_last_ai:
+                data = server.on_get_last_ai(since) or {}
+                payload.update(data)
+            self._write_json(200, payload)
+            return
+
         self._write_json(404, {"ok": False, "error": "not_found"})
 
     def do_POST(self):
@@ -65,9 +87,12 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             if not text:
                 self._write_json(400, {"ok": False, "error": "text_required"})
                 return
+            message = "请求已提交到 AI，处理中..."
             if server.on_chat:
-                server.on_chat(text)
-            self._write_json(200, {"ok": True})
+                ret = server.on_chat(text)
+                if isinstance(ret, str) and ret.strip():
+                    message = ret.strip()
+            self._write_json(200, {"ok": True, "message": message})
             return
 
         self._write_json(404, {"ok": False, "error": "not_found"})
@@ -80,13 +105,15 @@ class AICADBridgeServer:
         port: int = 8765,
         on_show: Optional[Callable[[], None]] = None,
         on_stop: Optional[Callable[[], None]] = None,
-        on_chat: Optional[Callable[[str], None]] = None,
+        on_chat: Optional[Callable[[str], Optional[str]]] = None,
+        on_get_last_ai: Optional[Callable[[int], Optional[Dict[str, Any]]]] = None,
     ):
         self.host = host
         self.port = port
         self.on_show = on_show
         self.on_stop = on_stop
         self.on_chat = on_chat
+        self.on_get_last_ai = on_get_last_ai
 
         self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None

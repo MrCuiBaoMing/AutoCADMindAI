@@ -87,6 +87,8 @@ class StatusIndicator(QWidget):
 
 class AICADPlugin(QMainWindow):
     """AI CAD插件主窗口"""
+
+    bridge_chat_signal = pyqtSignal(str)
     
     def __init__(self):
         super().__init__()
@@ -121,6 +123,8 @@ class AICADPlugin(QMainWindow):
         self._ignore_ai_result = False  # 停止后忽略迟到结果
         self._request_seq = 0  # 递增请求序号
         self._active_request_id = 0  # 当前有效请求ID（仅此ID可触发执行）
+        self._bridge_last_ai_seq = 0
+        self._bridge_last_ai_message = ""
 
         # 本地 IPC Bridge：供 AutoCAD C# 插件调用
         self.bridge = AICADBridgeServer(
@@ -129,10 +133,12 @@ class AICADPlugin(QMainWindow):
             on_show=self._bridge_show,
             on_stop=self._bridge_stop,
             on_chat=self._bridge_chat,
+            on_get_last_ai=self._bridge_get_last_ai,
         )
 
         # 初始化UI
         self.init_ui()
+        self.bridge_chat_signal.connect(self._bridge_chat_on_ui)
 
         # 先启动桥接服务（优先保证 AutoCAD AIMIND 可快速探活成功）
         try:
@@ -847,6 +853,8 @@ class AICADPlugin(QMainWindow):
             response_text = result.get('response', '')
             intent = result.get('intent', 'chat')
             self.add_chat_message("AI", response_text)
+            self._bridge_last_ai_seq += 1
+            self._bridge_last_ai_message = str(response_text or "")
 
             # 仅追加 AI 回复到对话历史（用户消息已在发送时写入，避免点停止后丢失上下文）
             self._chat_history.append({"role": "assistant", "content": response_text})
@@ -1004,10 +1012,23 @@ class AICADPlugin(QMainWindow):
         QTimer.singleShot(0, self.stop_processing)
 
     def _bridge_chat(self, text: str):
-        def _enqueue():
-            self.input_field.setText(text)
-            self.send_command()
-        QTimer.singleShot(0, _enqueue)
+        message = (text or "").strip()
+        if not message:
+            return "请输入内容"
+        self.bridge_chat_signal.emit(message)
+        return "请求已提交到 AI，处理中..."
+
+    def _bridge_chat_on_ui(self, message: str):
+        self.input_field.setText(message)
+        self.send_command()
+
+    def _bridge_get_last_ai(self, since: int = 0):
+        has_new = self._bridge_last_ai_seq > int(since or 0)
+        return {
+            "has_new": has_new,
+            "seq": int(self._bridge_last_ai_seq),
+            "message": self._bridge_last_ai_message if has_new else ""
+        }
 
     def _show_from_bridge(self):
         self.showNormal()

@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("AutoCADMindAI.Plugin")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d0b129a472c7e73d740099de5a1def54f1a25113")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b8a39f0fc36e82f578734fc18edee709ab958a6c")]
 [assembly: System.Reflection.AssemblyProductAttribute("AutoCADMindAI.Plugin")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AutoCADMindAI.Plugin")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

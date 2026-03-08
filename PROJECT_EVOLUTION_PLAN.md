@@ -242,3 +242,4 @@
 | 2026-03-08 | V1-1/V1-4 | 收口完成：默认入口文案统一为 `AIMIND`，并完成 `AIMIND` 进入可交互状态闭环验收 | 通过 | 用户确认可从 AIMIND 稳定拉起并进入对话输入 |
 | 2026-03-08 | V2-1 | 启动 Palette 最小面板开发：新增可停靠面板（输入/发送/停止/状态）并接入 AIMIND 打开面板 | 开发完成，待 AutoCAD 场景实测 | 变更文件：`acad/AutoCADMindAI.Plugin.cs` |
 | 2026-03-08 | V2-1 | 编译纠偏：修复 PromptResult 读取方式与 Application 命名冲突残留，恢复插件可编译性 | 开发完成，待 Rebuild + AutoCAD 实测 | 变更文件：`acad/AutoCADMindAI.Plugin.cs`；按计划继续推进 V2-1 验收 |
+| 2026-03-08 | V2-1/V2-3 | 面板体验升级：重构为“会话区 + 输入区 + 六功能按钮（发送/停止/启动服务/检测连接/取消CAD命令/清空）+ 状态条”，并补齐单窗口闭环操作 | 开发完成，待 AutoCAD 交互实测 | 变更文件：`acad/AutoCADMindAI.Plugin.cs`；目标是减少与外部窗口切换 |
