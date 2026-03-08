@@ -6,6 +6,9 @@ using System.Text;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Runtime;
+using Autodesk.AutoCAD.Windows;
+using System.Windows.Forms;
+using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 
 [assembly: ExtensionApplication(typeof(AutoCADMindAIPlugin.PluginEntry))]
@@ -22,9 +25,12 @@ namespace AutoCADMindAIPlugin
             Timeout = TimeSpan.FromSeconds(2)
         };
 
+        private static PaletteSet _aiPalette;
+        private static AIPaletteControl _aiPaletteControl;
+
         public void Initialize()
         {
-            var doc = Application.DocumentManager.MdiActiveDocument;
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
             var ed = doc?.Editor;
             if (ed != null)
             {
@@ -33,27 +39,40 @@ namespace AutoCADMindAIPlugin
             Write("AutoCADMindAI 插件已加载。默认入口: AIMIND。开发调试命令: AICHAT, AISTOP, AISTART, AIPING");
         }
 
-        public void Terminate() { }
+        public void Terminate()
+        {
+            try
+            {
+                if (_aiPalette != null)
+                {
+                    _aiPalette.Visible = false;
+                }
+            }
+            catch { }
+        }
 
         [CommandMethod("AIMIND", CommandFlags.Modal)]
         public void AIMIND()
         {
-            var ed = Application.DocumentManager.MdiActiveDocument?.Editor;
+            var ed = AcApp.DocumentManager.MdiActiveDocument?.Editor;
             ed?.WriteMessage("\n[AutoCADMindAI] AIMIND 已触发");
             AppendStartupLog("C#", "AIMIND command triggered.");
 
             if (EnsureBridgeReady(ed))
             {
-                PostJson("/show", "{}");
-                Write("AI 窗口已就绪，你可以直接输入需求。", ed);
-                AppendStartupLog("C#", "AIMIND flow ready: bridge alive and /show posted.");
+                EnsurePalette();
+                _aiPalette.Visible = true;
+                _aiPalette.KeepFocus = true;
+                _aiPaletteControl?.SetStatus("就绪");
+                Write("AI 面板已就绪，你可以直接输入需求。", ed);
+                AppendStartupLog("C#", "AIMIND flow ready: bridge alive and palette shown.");
             }
         }
 
         [CommandMethod("AISTART", CommandFlags.Modal)]
         public void AISTART()
         {
-            var ed = Application.DocumentManager.MdiActiveDocument?.Editor;
+            var ed = AcApp.DocumentManager.MdiActiveDocument?.Editor;
             Write("AISTART 为开发者调试命令。普通用户请直接使用 AIMIND。", ed);
 
             if (EnsureBridgeReady(ed))
@@ -65,7 +84,7 @@ namespace AutoCADMindAIPlugin
         [CommandMethod("AIPING", CommandFlags.Modal)]
         public void AIPING()
         {
-            var ed = Application.DocumentManager.MdiActiveDocument?.Editor;
+            var ed = AcApp.DocumentManager.MdiActiveDocument?.Editor;
             Write("AIPING 为开发者调试命令。普通用户请直接使用 AIMIND。", ed);
 
             if (IsBridgeAlive())
@@ -77,7 +96,7 @@ namespace AutoCADMindAIPlugin
         [CommandMethod("AICHAT", CommandFlags.Modal)]
         public void AICHAT()
         {
-            var doc = Application.DocumentManager.MdiActiveDocument;
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
             if (!EnsureBridgeReady(doc.Editor))
             {
@@ -85,15 +104,11 @@ namespace AutoCADMindAIPlugin
             }
             PostJson("/show", "{}");
 
-            var pso = new PromptStringOptions("\n输入给 AI 的内容: ")
-            {
-                AllowSpaces = true
-            };
-            var pr = doc.Editor.GetString(pso);
-            if (pr.Status != PromptStatus.OK || string.IsNullOrWhiteSpace(pr.StringResult))
+            var input = doc.Editor.GetString("\n输入给 AI 的内容: ");
+            if (input.Status != PromptStatus.OK || string.IsNullOrWhiteSpace(input.StringResult))
                 return;
 
-            PostJson("/chat", "{\"text\":\"" + EscapeJson(pr.StringResult) + "\"}");
+            PostJson("/chat", "{\"text\":\"" + EscapeJson(input.StringResult) + "\"}");
             Write("已发送到 AI。", doc.Editor);
         }
 
@@ -101,13 +116,13 @@ namespace AutoCADMindAIPlugin
         public void AISTOP()
         {
             PostJson("/stop", "{}");
-            Write("已请求停止。", Application.DocumentManager.MdiActiveDocument?.Editor);
+            Write("已请求停止。", AcApp.DocumentManager.MdiActiveDocument?.Editor);
         }
 
         [CommandMethod("AICANCEL", CommandFlags.Modal)]
         public void AICANCEL()
         {
-            var doc = Application.DocumentManager.MdiActiveDocument;
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
             var ed = doc?.Editor;
             if (doc != null)
             {
@@ -171,7 +186,7 @@ namespace AutoCADMindAIPlugin
 
         private static bool StartPythonUi()
         {
-            var ed = Application.DocumentManager.MdiActiveDocument?.Editor;
+            var ed = AcApp.DocumentManager.MdiActiveDocument?.Editor;
             var pluginDir = Path.GetDirectoryName(typeof(PluginEntry).Assembly.Location) ?? Environment.CurrentDirectory;
 
             if (IsBridgeAlive()) return true;
@@ -250,6 +265,65 @@ namespace AutoCADMindAIPlugin
             return false;
         }
 
+        private static void EnsurePalette()
+        {
+            if (_aiPalette != null && _aiPaletteControl != null) return;
+
+            _aiPalette = new PaletteSet("AutoCADMindAI")
+            {
+                Style = PaletteSetStyles.NameEditable |
+                        PaletteSetStyles.ShowAutoHideButton |
+                        PaletteSetStyles.ShowCloseButton |
+                        PaletteSetStyles.Snappable,
+                DockEnabled = DockSides.Left | DockSides.Right,
+                MinimumSize = new System.Drawing.Size(300, 220),
+                Size = new System.Drawing.Size(360, 300)
+            };
+
+            _aiPaletteControl = new AIPaletteControl();
+            _aiPaletteControl.SendRequested += OnPaletteSendRequested;
+            _aiPaletteControl.StopRequested += OnPaletteStopRequested;
+            _aiPalette.Add("AI", _aiPaletteControl);
+        }
+
+        private static void OnPaletteSendRequested(string text)
+        {
+            var ed = AcApp.DocumentManager.MdiActiveDocument?.Editor;
+            if (!EnsureBridgeReady(ed))
+            {
+                _aiPaletteControl?.SetStatus("未连接");
+                return;
+            }
+
+            var payload = "{\"text\":\"" + EscapeJson(text) + "\"}";
+            var ok = PostJsonWithResult("/chat", payload);
+            _aiPaletteControl?.SetStatus(ok ? "已发送" : "发送失败");
+            if (!ok)
+            {
+                Write("发送失败，请检查 bridge_start.log。", ed);
+            }
+        }
+
+        private static void OnPaletteStopRequested()
+        {
+            var ok = PostJsonWithResult("/stop", "{}");
+            _aiPaletteControl?.SetStatus(ok ? "已停止" : "停止失败");
+        }
+
+        private static bool PostJsonWithResult(string path, string json)
+        {
+            try
+            {
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var resp = Http.PostAsync(BridgeBaseUrl + path, content).GetAwaiter().GetResult();
+                return resp.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static void PostJson(string path, string json)
         {
             try
@@ -281,7 +355,7 @@ namespace AutoCADMindAIPlugin
 
         private static void Write(string message, Editor ed = null)
         {
-            var editor = ed ?? Application.DocumentManager.MdiActiveDocument?.Editor;
+            var editor = ed ?? AcApp.DocumentManager.MdiActiveDocument?.Editor;
             editor?.WriteMessage("\n[AutoCADMindAI] " + message);
         }
 
@@ -296,4 +370,101 @@ namespace AutoCADMindAIPlugin
         }
     }
 
+    internal sealed class AIPaletteControl : UserControl
+    {
+        private readonly TextBox _input;
+        private readonly Button _sendButton;
+        private readonly Button _stopButton;
+        private readonly Label _statusLabel;
+
+        public event Action<string> SendRequested;
+        public event Action StopRequested;
+
+        public AIPaletteControl()
+        {
+            Dock = DockStyle.Fill;
+
+            var panel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 3,
+                Padding = new Padding(8)
+            };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            var title = new Label
+            {
+                Text = "AutoCADMindAI",
+                Dock = DockStyle.Fill,
+                AutoSize = true
+            };
+            panel.Controls.Add(title, 0, 0);
+            panel.SetColumnSpan(title, 2);
+
+            _input = new TextBox
+            {
+                Multiline = true,
+                Dock = DockStyle.Fill,
+                ScrollBars = ScrollBars.Vertical
+            };
+            panel.Controls.Add(_input, 0, 1);
+            panel.SetColumnSpan(_input, 2);
+
+            _sendButton = new Button
+            {
+                Text = "发送",
+                Dock = DockStyle.Fill
+            };
+            _sendButton.Click += (_, __) =>
+            {
+                var text = (_input.Text ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    SetStatus("请输入内容");
+                    return;
+                }
+                SendRequested?.Invoke(text);
+            };
+
+            _stopButton = new Button
+            {
+                Text = "停止",
+                Dock = DockStyle.Fill
+            };
+            _stopButton.Click += (_, __) => StopRequested?.Invoke();
+
+            var btnPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1
+            };
+            btnPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            btnPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            btnPanel.Controls.Add(_sendButton, 0, 0);
+            btnPanel.Controls.Add(_stopButton, 1, 0);
+
+            panel.Controls.Add(btnPanel, 0, 2);
+
+            _statusLabel = new Label
+            {
+                Text = "状态：未连接",
+                Dock = DockStyle.Fill,
+                TextAlign = System.Drawing.ContentAlignment.MiddleRight
+            };
+            panel.Controls.Add(_statusLabel, 1, 2);
+
+            Controls.Add(panel);
+        }
+
+        public void SetStatus(string status)
+        {
+            _statusLabel.Text = "状态：" + status;
+        }
+    }
 }
