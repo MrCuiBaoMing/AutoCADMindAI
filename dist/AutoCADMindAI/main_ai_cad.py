@@ -133,23 +133,20 @@ class AICADPlugin(QMainWindow):
 
         # 初始化UI
         self.init_ui()
-        
-        # 连接AutoCAD
-        self.connect_to_acad()
-        
-        # 初始化AI模型
-        self.ai_model = None
-        self.init_ai_model()
-        
-        # 启动桥接服务（允许 AutoCAD 插件直接调用本UI）
+
+        # 先启动桥接服务（优先保证 AutoCAD AIMIND 可快速探活成功）
         try:
             self.bridge.start()
             self.add_chat_message("系统", "🔌 本地桥接服务已启动: http://127.0.0.1:8765")
         except Exception as e:
             self.add_chat_message("系统", f"⚠ 桥接服务启动失败: {str(e)}")
 
+        # 延后执行可能较慢的初始化，确保 bridge 可被 AIMIND 快速探活
+        self.ai_model = None
+        QTimer.singleShot(0, self._deferred_init_after_bridge)
+
         # 更新状态栏
-        self.update_status_bar("就绪 - 输入指令控制AutoCAD")
+        self.update_status_bar("启动中 - 正在初始化 AutoCAD 与 AI 模型...")
     
     def set_window_properties(self):
         """设置窗口属性：置顶、无边框、透明"""
@@ -981,6 +978,20 @@ class AICADPlugin(QMainWindow):
         self.history_display.append("-")
         self.history_display.moveCursor(QTextCursor.MoveOperation.End)
     
+    def _deferred_init_after_bridge(self):
+        """Bridge 启动后再执行慢初始化，避免影响 AIMIND 冷启动探活。"""
+        try:
+            self.connect_to_acad()
+        except Exception as e:
+            self.add_chat_message("系统", f"⚠ AutoCAD 连接初始化失败: {str(e)}")
+
+        try:
+            self.init_ai_model()
+        except Exception as e:
+            self.add_chat_message("系统", f"⚠ AI 模型初始化失败: {str(e)}")
+
+        self.update_status_bar("就绪 - 输入指令控制AutoCAD")
+
     def update_status_bar(self, message):
         """更新状态栏"""
         self.statusBarWidget.showMessage(message)

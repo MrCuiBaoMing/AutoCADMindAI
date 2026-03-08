@@ -1,9 +1,10 @@
 @echo off
 setlocal
+chcp 65001 >nul
 cd /d "%~dp0"
 
 set "LOG_FILE=%~dp0bridge_start.log"
-echo ==== [%date% %time%] start.bat begin ==== > "%LOG_FILE%"
+echo ==== [%date% %time%] start.bat begin ==== >> "%LOG_FILE%"
 echo CWD=%cd% >> "%LOG_FILE%"
 
 if exist "venv\Scripts\python.exe" (
