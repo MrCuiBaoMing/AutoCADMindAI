@@ -28,9 +28,9 @@ namespace AutoCADMindAIPlugin
             var ed = doc?.Editor;
             if (ed != null)
             {
-                ed.WriteMessage("\n[AutoCADMindAI] 插件初始化成功。可用命令: AIMIND, AICHAT, AISTOP");
+                ed.WriteMessage("\n[AutoCADMindAI] 插件初始化成功。推荐命令: AIMIND（开发调试: AICHAT, AISTOP, AISTART, AIPING）");
             }
-            Write("AutoCADMindAI 插件已加载。命令: AISTART, AIPING, AIMIND, AICHAT, AISTOP");
+            Write("AutoCADMindAI 插件已加载。默认入口: AIMIND。开发调试命令: AICHAT, AISTOP, AISTART, AIPING");
         }
 
         public void Terminate() { }

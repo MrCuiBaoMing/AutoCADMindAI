@@ -1,5 +1,15 @@
-﻿[2026-03-08 11:40:09.492] [C#] AIMIND command triggered.
-[2026-03-08 11:40:11.500] [C#] Bridge health check failed, start bootstrap now.
-[2026-03-08 11:40:13.616] [C#] Background launch main_ai_cad.py via py success.
-[2026-03-08 11:40:14.635] [C#] Bridge became healthy after bootstrap.
-[2026-03-08 11:40:14.652] [C#] AIMIND flow ready: bridge alive and /show posted.
+﻿[2026-03-08 11:47:34.799] [C#] AIMIND command triggered.
+[2026-03-08 11:47:36.805] [C#] Bridge health check failed, start bootstrap now.
+[2026-03-08 11:47:38.909] [C#] Background launch main_ai_cad.py via py success.
+[2026-03-08 11:47:39.916] [C#] Bridge became healthy after bootstrap.
+[2026-03-08 11:47:39.941] [C#] AIMIND flow ready: bridge alive and /show posted.
+[2026-03-08 11:48:54.806] [C#] AIMIND command triggered.
+[2026-03-08 11:48:56.821] [C#] Bridge health check failed, start bootstrap now.
+[2026-03-08 11:48:58.840] [C#] Background launch main_ai_cad.py via py success.
+[2026-03-08 11:48:59.918] [C#] Bridge became healthy after bootstrap.
+[2026-03-08 11:48:59.976] [C#] AIMIND flow ready: bridge alive and /show posted.
+[2026-03-08 11:51:02.464] [C#] AIMIND command triggered.
+[2026-03-08 11:51:04.475] [C#] Bridge health check failed, start bootstrap now.
+[2026-03-08 11:51:06.497] [C#] Background launch main_ai_cad.py via py success.
+[2026-03-08 11:51:07.539] [C#] Bridge became healthy after bootstrap.
+[2026-03-08 11:51:07.568] [C#] AIMIND flow ready: bridge alive and /show posted.
