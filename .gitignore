@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+
+# Visual Studio
+acad/.vs/
+
+# Build outputs
+acad/bin/
+acad/obj/
+dist/
+
+# Configuration files
+config.ini
+
+# IDE
+.vscode/
+.idea/
+
+# OS generated files
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+
+# Environment
+.env
+
+# Temporary files
+*.tmp
+*.temp
