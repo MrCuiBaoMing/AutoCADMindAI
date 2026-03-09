@@ -6,6 +6,7 @@ AI CAD 智能启动脚本
 """
 
 import sys
+import os
 import subprocess
 import importlib.util
 import time
@@ -65,7 +66,8 @@ def main():
     required_modules = [
         ("PyQt6", "PyQt6>=6.4.0"),
         ("win32com", "pywin32>=305"),
-        ("requests", "requests>=2.28.0")
+        ("requests", "requests>=2.28.0"),
+        ("pyodbc", "pyodbc>=5.1.0")
     ]
     
     need_install = []
@@ -97,6 +99,20 @@ def main():
         print("[OK] 所有依赖已就绪!")
         print()
     
+    # Windows 平台额外检查：ODBC Driver 是否可用（pyodbc 仅是 Python 包）
+    if os.name == "nt":
+        try:
+            import pyodbc  # noqa
+            drivers = [d.lower() for d in pyodbc.drivers()]
+            has_sql_driver = any("sql server" in d for d in drivers)
+            if has_sql_driver:
+                print("[OK] 已检测到 SQL Server ODBC Driver")
+            else:
+                print("[WARN] 未检测到 SQL Server ODBC Driver，数据库功能可能不可用")
+                print("      建议安装: ODBC Driver 17/18 for SQL Server")
+        except Exception as e:
+            print(f"[WARN] 无法检测 ODBC Driver: {e}")
+
     print("正在启动 AI CAD...")
     print("=" * 50)
     print()

@@ -7,6 +7,9 @@ AI CAD设置窗口
 
 import json
 import os
+
+from core.config_db_store import ConfigDBStore
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QComboBox, QListWidget, QGroupBox, QFormLayout,
@@ -62,6 +65,7 @@ class SettingsWindow(QDialog):
         self.models = []
         self.loaded_autocad_config = {}
         self.loaded_general_config = {}
+        self.loaded_db_config = {}
 
         # 当前选中的模型索引
         self.current_model_index = -1
@@ -90,7 +94,11 @@ class SettingsWindow(QDialog):
         # AutoCAD配置标签页
         autocad_tab = self.create_autocad_tab()
         tab_widget.addTab(autocad_tab, "AutoCAD配置")
-        
+
+        # 数据库配置标签页
+        db_tab = self.create_db_tab()
+        tab_widget.addTab(db_tab, "数据库配置")
+
         # 通用设置标签页
         general_tab = self.create_general_tab()
         tab_widget.addTab(general_tab, "通用设置")
@@ -302,6 +310,42 @@ class SettingsWindow(QDialog):
         
         return widget
     
+    def create_db_tab(self):
+        """创建数据库配置标签页"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
+
+        group = QGroupBox("SQL Server 2014 连接配置")
+        form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form_layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        form_layout.setHorizontalSpacing(14)
+        form_layout.setVerticalSpacing(12)
+
+        self.db_enable_check = QCheckBox("启用数据库配置中心（优先从数据库读取配置）")
+
+        self.db_connection_string_edit = QLineEdit()
+        self.db_connection_string_edit.setPlaceholderText("DRIVER={ODBC Driver 17 for SQL Server};SERVER=127.0.0.1,1433;DATABASE=AICAD_KB;UID=sa;PWD=***")
+
+        self.db_config_key_edit = QLineEdit()
+        self.db_config_key_edit.setPlaceholderText("默认: app/global")
+
+        test_db_button = QPushButton("测试数据库连接")
+        test_db_button.clicked.connect(self.test_db_connection)
+
+        form_layout.addRow("", self.db_enable_check)
+        form_layout.addRow("连接字符串:", self.db_connection_string_edit)
+        form_layout.addRow("配置键:", self.db_config_key_edit)
+        form_layout.addRow("", test_db_button)
+
+        group.setLayout(form_layout)
+        layout.addWidget(group)
+        layout.addStretch()
+
+        return widget
+
     def create_general_tab(self):
         """创建通用设置标签页"""
         widget = QWidget()
@@ -423,11 +467,9 @@ class SettingsWindow(QDialog):
             self.model_list.item(self.current_model_index).setText(model.name)
     
     def test_connection(self):
-        """测试连接"""
+        """测试模型连接（占位）"""
         if self.current_model_index >= 0:
             model = self.models[self.current_model_index]
-            
-            # 这里可以添加实际的连接测试逻辑
             QMessageBox.information(
                 self, "测试结果",
                 f"模型 '{model.name}' 配置有效！\n"
@@ -436,6 +478,24 @@ class SettingsWindow(QDialog):
             )
         else:
             QMessageBox.warning(self, "警告", "请先选择一个模型")
+
+    def test_db_connection(self):
+        """测试数据库连接"""
+        if not self.db_enable_check.isChecked():
+            QMessageBox.information(self, "提示", "当前未启用数据库配置中心")
+            return
+
+        conn_str = self.db_connection_string_edit.text().strip()
+        if not conn_str:
+            QMessageBox.warning(self, "警告", "请先输入数据库连接字符串")
+            return
+
+        try:
+            store = ConfigDBStore(conn_str)
+            _ = store.get_active_config(self.db_config_key_edit.text().strip() or "app/global")
+            QMessageBox.information(self, "成功", "数据库连接测试通过")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"数据库连接测试失败: {str(e)}")
     
     def save_settings(self):
         """保存设置"""
@@ -449,6 +509,11 @@ class SettingsWindow(QDialog):
                 "command_delay": self.command_delay_spin.value(),
                 "auto_connect": self.auto_connect_check.isChecked()
             },
+            "database": {
+                "enabled": self.db_enable_check.isChecked(),
+                "connection_string": self.db_connection_string_edit.text().strip(),
+                "config_key": self.db_config_key_edit.text().strip() or "app/global"
+            },
             "general": {
                 "language": self.language_combo.currentText(),
                 "theme": self.theme_combo.currentText(),
@@ -459,7 +524,23 @@ class SettingsWindow(QDialog):
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
-            
+
+            # 若启用数据库配置中心，则同步写入数据库（INSERT 新版本 + 禁用旧版本）
+            db_cfg = config.get("database", {})
+            if db_cfg.get("enabled"):
+                conn_str = (db_cfg.get("connection_string") or "").strip()
+                config_key = (db_cfg.get("config_key") or "app/global").strip()
+                if not conn_str:
+                    raise ValueError("已启用数据库配置中心，但连接字符串为空")
+
+                store = ConfigDBStore(conn_str)
+                store.save_new_version(
+                    config_key=config_key,
+                    config_data=config,
+                    changed_by="ui/settings_window",
+                    reason="通过设置窗口保存配置"
+                )
+
             QMessageBox.information(self, "成功", "设置已保存！")
             self.accept()
         except Exception as e:
@@ -478,6 +559,9 @@ class SettingsWindow(QDialog):
                 # 加载AutoCAD配置
                 self.loaded_autocad_config = config.get("autocad", {})
 
+                # 加载数据库配置
+                self.loaded_db_config = config.get("database", {})
+
                 # 加载通用配置
                 self.loaded_general_config = config.get("general", {})
 
@@ -486,15 +570,28 @@ class SettingsWindow(QDialog):
 
     def apply_loaded_config_to_ui(self):
         """将配置文件中的值回填到控件"""
+        def _safe_int(value, default):
+            try:
+                if value is None:
+                    return int(default)
+                return int(value)
+            except Exception:
+                return int(default)
+
         ac = self.loaded_autocad_config or {}
-        self.connection_timeout_spin.setValue(int(ac.get("connection_timeout", 10)))
-        self.command_delay_spin.setValue(int(ac.get("command_delay", 1)))
+        self.connection_timeout_spin.setValue(_safe_int(ac.get("connection_timeout", 10), 10))
+        self.command_delay_spin.setValue(_safe_int(ac.get("command_delay", 1), 1))
         self.auto_connect_check.setChecked(bool(ac.get("auto_connect", False)))
 
+        db = self.loaded_db_config or {}
+        self.db_enable_check.setChecked(bool(db.get("enabled", False)))
+        self.db_connection_string_edit.setText(db.get("connection_string", "") or "")
+        self.db_config_key_edit.setText(db.get("config_key", "app/global") or "app/global")
+
         g = self.loaded_general_config or {}
-        lang = g.get("language", "简体中文")
-        theme = g.get("theme", "默认")
-        history_limit = int(g.get("history_limit", 100))
+        lang = g.get("language", "简体中文") or "简体中文"
+        theme = g.get("theme", "默认") or "默认"
+        history_limit = _safe_int(g.get("history_limit", 100), 100)
 
         lang_index = self.language_combo.findText(lang)
         if lang_index >= 0:

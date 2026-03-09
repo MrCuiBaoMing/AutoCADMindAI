@@ -27,6 +27,7 @@ from config_manager import ConfigManager
 from ai_model import get_ai_model
 from ui.settings_window import SettingsWindow
 from ipc_bridge import AICADBridgeServer
+from core.config_db_store import ConfigDBStore
 
 class StatusIndicator(QWidget):
     """状态指示器控件"""
@@ -261,30 +262,38 @@ class AICADPlugin(QMainWindow):
             self.update_status_bar(f"AI模型初始化失败，使用本地模型: {str(e)}")
     
     def load_models(self):
-        """加载配置的模型"""
+        """加载配置的模型（优先数据库，其次本地文件）"""
         try:
-            # 直接从配置文件加载
             import json
             import os
-            
+
             config_file = os.path.join(os.path.dirname(__file__), "ai_config.json")
+            config = {}
             if os.path.exists(config_file):
                 with open(config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                
-                # 创建模型配置对象
-                from ui.settings_window import ModelConfig
-                self.models = [ModelConfig.from_dict(m) for m in config.get("models", [])]
-                
-                # 更新模型选择下拉框
-                self.model_combo.clear()
-                for model in self.models:
-                    self.model_combo.addItem(model.name)
-                
-                if len(self.models) > 0:
-                    self.model_combo.setCurrentIndex(0)
-            else:
-                self.models = []
+
+            # 若启用数据库配置中心，优先读取数据库中的启用配置
+            db_cfg = config.get("database", {}) if isinstance(config, dict) else {}
+            if db_cfg.get("enabled"):
+                try:
+                    from core.config_db_store import ConfigDBStore
+                    store = ConfigDBStore((db_cfg.get("connection_string") or "").strip())
+                    active = store.get_active_config((db_cfg.get("config_key") or "app/global").strip())
+                    if active and isinstance(active.get("config_json"), dict):
+                        config = active.get("config_json")
+                except Exception as db_err:
+                    print(f"数据库配置读取失败，回退本地配置: {db_err}")
+
+            from ui.settings_window import ModelConfig
+            self.models = [ModelConfig.from_dict(m) for m in config.get("models", [])]
+
+            self.model_combo.clear()
+            for model in self.models:
+                self.model_combo.addItem(model.name)
+
+            if len(self.models) > 0:
+                self.model_combo.setCurrentIndex(0)
         except Exception as e:
             print(f"加载模型配置失败: {e}")
             self.models = []
@@ -300,6 +309,8 @@ class AICADPlugin(QMainWindow):
                 self.init_ai_model()
                 # 应用通用主题配置
                 self.apply_theme(self._get_saved_theme())
+                # 立即刷新数据库连接状态（无需重启）
+                self.check_database_connection_at_startup()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"打开设置窗口失败: {str(e)}")
     
@@ -334,10 +345,15 @@ class AICADPlugin(QMainWindow):
         title_label = QLabel("🤖 AI CAD 助手")
         title_label.setStyleSheet("font-weight: bold; font-size: 16px; color: #2c3e50;")
         
-        # 状态指示器
+        # AutoCAD 状态指示器
         self.status_indicator = StatusIndicator()
         self.status_label = QLabel("未连接")
         self.status_label.setStyleSheet("font-size: 12px; color: #7f8c8d;")
+
+        # 数据库状态指示器
+        self.db_status_indicator = StatusIndicator()
+        self.db_status_label = QLabel("书库未连接")
+        self.db_status_label.setStyleSheet("font-size: 12px; color: #7f8c8d;")
         
         # 窗口控制按钮（仅图标，无背景块）
         min_button = QPushButton("−")
@@ -446,6 +462,9 @@ class AICADPlugin(QMainWindow):
         title_layout.addSpacing(10)
         title_layout.addWidget(self.status_indicator)
         title_layout.addWidget(self.status_label)
+        title_layout.addSpacing(8)
+        title_layout.addWidget(self.db_status_indicator)
+        title_layout.addWidget(self.db_status_label)
         title_layout.addStretch()
         title_layout.addWidget(min_button)
         title_layout.addSpacing(6)
@@ -962,6 +981,8 @@ class AICADPlugin(QMainWindow):
             self.status_indicator.set_status("disconnected")
             self.status_label.setText("未连接")
 
+        # 数据库状态不随CAD重置，启动后保持当前检测结果
+
     def _is_operation_intent(self, text: str) -> bool:
         """判断用户输入是否包含“执行CAD操作”意图。"""
         t = (text or "").strip().lower()
@@ -1132,6 +1153,9 @@ class AICADPlugin(QMainWindow):
     
     def _deferred_init_after_bridge(self):
         """Bridge 启动后再执行慢初始化，避免影响 AIMIND 冷启动探活。"""
+        # 先验证数据库连接状态
+        self.check_database_connection_at_startup()
+
         try:
             self.connect_to_acad()
         except Exception as e:
@@ -1143,6 +1167,44 @@ class AICADPlugin(QMainWindow):
             self.add_chat_message("系统", f"⚠ AI 模型初始化失败: {str(e)}")
 
         self.update_status_bar("就绪 - 输入指令控制AutoCAD")
+
+    def check_database_connection_at_startup(self):
+        """软件启动时验证数据库连接并更新状态指示。"""
+        try:
+            config_file = os.path.join(os.path.dirname(__file__), "ai_config.json")
+            db_cfg = {}
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                db_cfg = (cfg or {}).get("database", {}) if isinstance(cfg, dict) else {}
+
+            if not db_cfg.get("enabled"):
+                self.db_status_indicator.set_status("disconnected")
+                self.db_status_label.setText("书库未启用")
+                self.add_chat_message("系统", "🗂 数据库配置已预置，当前未启用（可在设置中启用）")
+                return
+
+            conn_str = (db_cfg.get("connection_string") or "").strip()
+            if not conn_str:
+                self.db_status_indicator.set_status("disconnected")
+                self.db_status_label.setText("书库配置缺失")
+                self.add_chat_message("系统", "⚠ 数据库已启用但连接字符串为空")
+                return
+
+            self.db_status_indicator.set_status("processing")
+            self.db_status_label.setText("书库连接中...")
+            QApplication.processEvents()
+
+            store = ConfigDBStore(conn_str)
+            _ = store.get_active_config((db_cfg.get("config_key") or "app/global").strip())
+
+            self.db_status_indicator.set_status("connected")
+            self.db_status_label.setText("书库已连接")
+            self.add_chat_message("系统", "🗄 知识库数据库连接成功")
+        except Exception as e:
+            self.db_status_indicator.set_status("disconnected")
+            self.db_status_label.setText("书库连接失败")
+            self.add_chat_message("系统", f"⚠ 知识库数据库连接失败: {str(e)}")
 
     def update_status_bar(self, message):
         """更新状态栏"""
