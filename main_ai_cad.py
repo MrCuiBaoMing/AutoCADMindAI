@@ -15,10 +15,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTextEdit, QLineEdit, QPushButton,
     QVBoxLayout, QHBoxLayout, QWidget, QSplitter, QTreeWidget,
-    QTreeWidgetItem, QLabel, QStatusBar, QComboBox, QMessageBox, QDialog
+    QTreeWidgetItem, QLabel, QStatusBar, QComboBox, QMessageBox, QDialog,
+    QToolButton, QMenu
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QByteArray, QUrl
-from PyQt6.QtGui import QTextCursor, QColor
+from PyQt6.QtGui import QTextCursor, QColor, QAction
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from autocad_controller import AutoCADController
@@ -336,90 +337,139 @@ class AICADPlugin(QMainWindow):
         self.status_label = QLabel("未连接")
         self.status_label.setStyleSheet("font-size: 12px; color: #7f8c8d;")
         
-        # 最小化按钮
-        min_button = QPushButton("—")
-        min_button.setFixedSize(35, 28)
+        # 窗口控制按钮（仅图标，无背景块）
+        min_button = QPushButton("−")
+        min_button.setFixedSize(34, 26)
         min_button.setStyleSheet("""
             QPushButton {
-                background-color: #3498db;
-                color: white;
+                background-color: transparent;
+                color: #7b7f87;
                 border: none;
-                border-radius: 4px;
-                font-size: 14px;
+                padding: 0;
+                font-size: 20px;
+                font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #2980b9;
+                background-color: transparent;
+                color: #a4a8b0;
+            }
+            QPushButton:pressed {
+                background-color: transparent;
+                color: #5f6470;
             }
         """)
         min_button.clicked.connect(self.showMinimized)
-        
-        # 最大化按钮
-        self.max_button = QPushButton("□")
-        self.max_button.setFixedSize(35, 28)
+
+        self.max_button = QPushButton("▢")
+        self.max_button.setFixedSize(34, 26)
         self.max_button.setStyleSheet("""
             QPushButton {
-                background-color: #9b59b6;
-                color: white;
+                background-color: transparent;
+                color: #7b7f87;
                 border: none;
-                border-radius: 4px;
-                font-size: 14px;
+                padding: 0;
+                font-size: 16px;
+                font-weight: 600;
             }
             QPushButton:hover {
-                background-color: #8e44ad;
+                background-color: transparent;
+                color: #a4a8b0;
+            }
+            QPushButton:pressed {
+                background-color: transparent;
+                color: #5f6470;
             }
         """)
         self.max_button.clicked.connect(self.toggle_maximize)
-        
-        # 关闭按钮
-        close_button = QPushButton("×")
-        close_button.setFixedSize(35, 28)
+
+        close_button = QPushButton("✕")
+        close_button.setFixedSize(30, 24)
         close_button.setStyleSheet("""
             QPushButton {
-                background-color: #e74c3c;
-                color: white;
+                background-color: transparent;
+                color: #7b7f87;
                 border: none;
-                border-radius: 4px;
-                font-size: 16px;
+                padding: 0;
+                font-size: 13px;
+                font-weight: 600;
             }
             QPushButton:hover {
-                background-color: #c0392b;
+                background-color: transparent;
+                color: #d96b6b;
+            }
+            QPushButton:pressed {
+                background-color: transparent;
+                color: #b44b4b;
             }
         """)
         close_button.clicked.connect(self.close)
         
+        # 应用内菜单（与标题同一行，位于左侧）
+        self.menu_file_btn = QToolButton()
+        self.menu_file_btn.setText("文件")
+        self.menu_file_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        file_menu = QMenu(self)
+        file_menu.addAction("设置", self.open_settings)
+        self.menu_file_btn.setMenu(file_menu)
+
+        self.menu_edit_btn = QToolButton(); self.menu_edit_btn.setText("编辑")
+        self.menu_view_btn = QToolButton(); self.menu_view_btn.setText("视图")
+        self.menu_draw_btn = QToolButton(); self.menu_draw_btn.setText("绘图")
+        self.menu_tools_btn = QToolButton(); self.menu_tools_btn.setText("工具")
+        self.menu_help_btn = QToolButton(); self.menu_help_btn.setText("帮助")
+        self.menu_help_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        help_menu = QMenu(self)
+        help_menu.addAction("关于软件", self.show_about_dialog)
+        help_menu.addAction("版权与授权", self.show_copyright_dialog)
+        self.menu_help_btn.setMenu(help_menu)
+
+        for btn in [self.menu_file_btn, self.menu_edit_btn, self.menu_view_btn, self.menu_draw_btn, self.menu_tools_btn, self.menu_help_btn]:
+            btn.setStyleSheet("""
+                QToolButton {
+                    background: transparent;
+                    color: #2c3e50;
+                    border: none;
+                    padding: 4px 8px;
+                    font-size: 13px;
+                }
+                QToolButton:hover {
+                    background-color: #ecf0f1;
+                    border-radius: 4px;
+                }
+            """)
+            title_layout.addWidget(btn)
+
+        title_layout.addSpacing(8)
         title_layout.addWidget(title_label)
         title_layout.addSpacing(10)
         title_layout.addWidget(self.status_indicator)
         title_layout.addWidget(self.status_label)
         title_layout.addStretch()
         title_layout.addWidget(min_button)
+        title_layout.addSpacing(6)
         title_layout.addWidget(self.max_button)
+        title_layout.addSpacing(6)
         title_layout.addWidget(close_button)
-        
+
         # 顶部控制栏
         control_layout = QHBoxLayout()
-        
+
         # 模型选择
         model_label = QLabel("🧠 AI模型:")
         model_label.setStyleSheet("font-size: 13px; color: #34495e;")
         self.model_combo = QComboBox()
         self.model_combo.currentIndexChanged.connect(self.on_model_changed)
         self.model_combo.setMinimumWidth(180)
-        
-        # 设置按钮
-        settings_button = QPushButton("⚙ 设置")
-        settings_button.clicked.connect(self.open_settings)
-        
+
         # 连接按钮
         self.connect_button = QPushButton("🔗 连接AutoCAD")
         self.connect_button.clicked.connect(self.connect_to_acad)
-        
+
         control_layout.addWidget(model_label)
         control_layout.addWidget(self.model_combo)
-        control_layout.addWidget(settings_button)
         control_layout.addStretch()
         control_layout.addWidget(self.connect_button)
-        
+
         # 添加标题栏和控制栏到主布局
         main_layout.addLayout(title_layout)
         main_layout.addLayout(control_layout)
@@ -597,6 +647,29 @@ class AICADPlugin(QMainWindow):
             }
         """)
     
+    def show_about_dialog(self):
+        """显示软件关于信息"""
+        about_text = (
+            "<b>AutoCADMindAI - AutoCAD智能助手</b><br><br>"
+            "版本：企业版（当前构建）<br>"
+            "技术栈：Python + PyQt6 + AutoCAD COM + AI 模型接口<br><br>"
+            "用途：用于企业内 AutoCAD 智能问答、命令辅助与流程支持。"
+        )
+        QMessageBox.about(self, "关于软件", about_text)
+
+    def show_copyright_dialog(self):
+        """显示版权与授权信息"""
+        copyright_text = (
+            "<b>软件版权与授权声明</b><br><br>"
+            "软件名称：AutoCADMindAI<br>"
+            "作者：崔宝明<br>"
+            "著作权人/拥有人：崔宝明（可按公司法务要求调整）<br>"
+            "授权使用单位：德州锦城电装股份有限公司<br><br>"
+            "说明：本软件及相关文档、界面与功能设计受版权保护。"
+            "未经授权，不得擅自复制、分发、修改或用于超出授权范围的用途。"
+        )
+        QMessageBox.information(self, "版权与授权", copyright_text)
+
     def add_function_nodes(self):
         """添加功能节点到树"""
         # 常用命令
