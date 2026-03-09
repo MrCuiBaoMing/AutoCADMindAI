@@ -156,20 +156,20 @@ class AICADPlugin(QMainWindow):
         self.update_status_bar("启动中 - 正在初始化 AutoCAD 与 AI 模型...")
     
     def set_window_properties(self):
-        """设置窗口属性：置顶、无边框、透明"""
+        """设置窗口属性：置顶、无边框、不透明"""
         # 设置窗口置顶
         self.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint |  # 始终置顶
             Qt.WindowType.FramelessWindowHint     # 无边框
         )
-        
-        # 设置窗口透明
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        
-        # 设置窗口透明度（0.0-1.0，1.0为不透明）
-        self.setWindowOpacity(0.98)
-        
-        # 允许鼠标穿透（当窗口透明时）
+
+        # 关闭半透明背景，改为不透明
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+
+        # 设置窗口不透明（1.0为完全不透明）
+        self.setWindowOpacity(1.0)
+
+        # 不启用鼠标穿透
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         
         # 保存正常大小和位置
@@ -298,6 +298,8 @@ class AICADPlugin(QMainWindow):
                 self.load_models()
                 # 重新初始化AI模型
                 self.init_ai_model()
+                # 应用通用主题配置
+                self.apply_theme(self._get_saved_theme())
         except Exception as e:
             QMessageBox.critical(self, "错误", f"打开设置窗口失败: {str(e)}")
     
@@ -545,9 +547,25 @@ class AICADPlugin(QMainWindow):
         main_layout.addWidget(splitter)
         
         self.setCentralWidget(central_widget)
-        
-        # 设置现代化窗口样式
-        self.setStyleSheet("""
+        self.apply_theme(self._get_saved_theme())
+    
+    def _get_saved_theme(self):
+        """读取已保存主题"""
+        try:
+            config_file = os.path.join(os.path.dirname(__file__), "ai_config.json")
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                return cfg.get("general", {}).get("theme", "默认")
+        except Exception:
+            pass
+        return "默认"
+
+    def apply_theme(self, theme_name: str):
+        """应用主题到主界面（不改变业务逻辑）"""
+        theme = theme_name or "默认"
+
+        light_qss = """
             QMainWindow {
                 background-color: #f5f6fa;
                 border: 2px solid #dcdde1;
@@ -565,9 +583,7 @@ class AICADPlugin(QMainWindow):
                 font-size: 13px;
                 color: #2c3e50;
             }
-            QTextEdit:focus {
-                border: 2px solid #3498db;
-            }
+            QTextEdit:focus { border: 2px solid #3498db; }
             QLineEdit {
                 background-color: #ffffff;
                 border: 2px solid #dcdde1;
@@ -576,9 +592,7 @@ class AICADPlugin(QMainWindow):
                 font-size: 13px;
                 color: #2c3e50;
             }
-            QLineEdit:focus {
-                border: 2px solid #3498db;
-            }
+            QLineEdit:focus { border: 2px solid #3498db; }
             QPushButton {
                 background-color: #3498db;
                 color: white;
@@ -588,12 +602,8 @@ class AICADPlugin(QMainWindow):
                 font-size: 13px;
                 font-weight: bold;
             }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-            QPushButton:pressed {
-                background-color: #1f6dad;
-            }
+            QPushButton:hover { background-color: #2980b9; }
+            QPushButton:pressed { background-color: #1f6dad; }
             QComboBox {
                 background-color: #ffffff;
                 border: 2px solid #dcdde1;
@@ -602,13 +612,8 @@ class AICADPlugin(QMainWindow):
                 font-size: 13px;
                 color: #2c3e50;
             }
-            QComboBox:focus {
-                border: 2px solid #3498db;
-            }
-            QComboBox::drop-down {
-                border: none;
-                width: 30px;
-            }
+            QComboBox:focus { border: 2px solid #3498db; }
+            QComboBox::drop-down { border: none; width: 30px; }
             QComboBox::down-arrow {
                 image: none;
                 border-left: 5px solid transparent;
@@ -623,17 +628,9 @@ class AICADPlugin(QMainWindow):
                 font-size: 12px;
                 color: #2c3e50;
             }
-            QTreeWidget::item {
-                padding: 5px;
-                border-radius: 4px;
-            }
-            QTreeWidget::item:selected {
-                background-color: #3498db;
-                color: white;
-            }
-            QTreeWidget::item:hover {
-                background-color: #ecf0f1;
-            }
+            QTreeWidget::item { padding: 5px; border-radius: 4px; }
+            QTreeWidget::item:selected { background-color: #3498db; color: white; }
+            QTreeWidget::item:hover { background-color: #ecf0f1; }
             QStatusBar {
                 background-color: #2c3e50;
                 color: #ecf0f1;
@@ -641,12 +638,86 @@ class AICADPlugin(QMainWindow):
                 font-size: 12px;
                 padding: 5px;
             }
-            QSplitter::handle {
-                background-color: #dcdde1;
-                height: 3px;
+            QSplitter::handle { background-color: #dcdde1; height: 3px; }
+        """
+
+        dark_qss = """
+            QMainWindow {
+                background-color: #14171c;
+                border: 1px solid #2d333b;
+                border-radius: 12px;
             }
-        """)
-    
+            QWidget {
+                background-color: #1b2129;
+                color: #d6dbe3;
+                border-radius: 8px;
+            }
+            QLabel { color: #d6dbe3; background: transparent; }
+            QTextEdit {
+                background-color: #11161d;
+                border: 1px solid #2f3742;
+                border-radius: 8px;
+                padding: 8px;
+                font-size: 13px;
+                color: #d6dbe3;
+            }
+            QTextEdit:focus { border: 1px solid #4b84ff; }
+            QLineEdit {
+                background-color: #11161d;
+                border: 1px solid #2f3742;
+                border-radius: 8px;
+                padding: 8px;
+                font-size: 13px;
+                color: #d6dbe3;
+            }
+            QLineEdit:focus { border: 1px solid #4b84ff; }
+            QPushButton {
+                background-color: #2e6be6;
+                color: #f5f8ff;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 14px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background-color: #3b78f0; }
+            QPushButton:pressed { background-color: #285fcd; }
+            QComboBox {
+                background-color: #11161d;
+                border: 1px solid #2f3742;
+                border-radius: 8px;
+                padding: 6px 8px;
+                color: #d6dbe3;
+            }
+            QTreeWidget {
+                background-color: #11161d;
+                border: 1px solid #2f3742;
+                border-radius: 8px;
+                color: #d6dbe3;
+            }
+            QTreeWidget::item:selected { background-color: #2e6be6; color: #ffffff; }
+            QTreeWidget::item:hover { background-color: #232b36; }
+            QStatusBar {
+                background-color: #0f141a;
+                color: #d6dbe3;
+                border-top: 1px solid #2a313d;
+                font-size: 12px;
+                padding: 4px;
+            }
+            QSplitter::handle { background-color: #2a313d; height: 3px; }
+            QMenu {
+                background-color: #1b2129;
+                color: #d6dbe3;
+                border: 1px solid #2f3742;
+            }
+            QMenu::item:selected { background-color: #2e6be6; color: #ffffff; }
+        """
+
+        if theme == "深色":
+            self.setStyleSheet(dark_qss)
+        else:
+            self.setStyleSheet(light_qss)
+
     def show_about_dialog(self):
         """显示软件关于信息"""
         about_text = (
@@ -663,7 +734,7 @@ class AICADPlugin(QMainWindow):
             "<b>软件版权与授权声明</b><br><br>"
             "软件名称：AutoCADMindAI<br>"
             "作者：崔宝明<br>"
-            "著作权人/拥有人：崔宝明（可按公司法务要求调整）<br>"
+            "著作权人/拥有人：崔宝明<br>"
             "授权使用单位：德州锦城电装股份有限公司<br><br>"
             "说明：本软件及相关文档、界面与功能设计受版权保护。"
             "未经授权，不得擅自复制、分发、修改或用于超出授权范围的用途。"

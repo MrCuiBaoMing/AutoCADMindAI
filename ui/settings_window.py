@@ -10,7 +10,8 @@ import os
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QComboBox, QListWidget, QGroupBox, QFormLayout,
-    QSpinBox, QMessageBox, QTabWidget, QWidget, QCheckBox
+    QSpinBox, QMessageBox, QTabWidget, QWidget, QCheckBox,
+    QAbstractItemView
 )
 from PyQt6.QtCore import Qt
 
@@ -51,15 +52,17 @@ class SettingsWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("AI CAD 设置")
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(500)
+        self.resize(920, 640)
+        self.setMinimumSize(860, 600)
         
         # 配置文件路径
         self.config_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ai_config.json")
         
         # 模型配置列表
         self.models = []
-        
+        self.loaded_autocad_config = {}
+        self.loaded_general_config = {}
+
         # 当前选中的模型索引
         self.current_model_index = -1
         
@@ -72,9 +75,13 @@ class SettingsWindow(QDialog):
     def init_ui(self):
         """初始化UI"""
         layout = QVBoxLayout(self)
-        
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
         # 创建标签页
         tab_widget = QTabWidget()
+        tab_widget.setDocumentMode(True)
+        tab_widget.setElideMode(Qt.TextElideMode.ElideRight)
         
         # 模型配置标签页
         model_tab = self.create_model_tab()
@@ -104,17 +111,87 @@ class SettingsWindow(QDialog):
         button_layout.addWidget(cancel_button)
         
         layout.addLayout(button_layout)
+
+        # 回填已加载配置到界面
+        self.apply_loaded_config_to_ui()
+
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f7f9fc;
+            }
+            QTabWidget::pane {
+                border: 1px solid #d8dee8;
+                border-radius: 8px;
+                background: #ffffff;
+            }
+            QTabBar::tab {
+                min-width: 96px;
+                padding: 8px 14px;
+                margin-right: 4px;
+                border: 1px solid #d8dee8;
+                border-bottom: none;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                background: #eef2f7;
+                color: #334155;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #1e293b;
+                font-weight: 600;
+            }
+            QGroupBox {
+                border: 1px solid #d8dee8;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
+                font-weight: 600;
+                color: #334155;
+                background: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+            }
+            QLineEdit, QComboBox, QSpinBox, QListWidget {
+                min-height: 30px;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                background: #ffffff;
+                padding: 4px 8px;
+                color: #1f2937;
+            }
+            QListWidget {
+                padding: 6px;
+            }
+            QPushButton {
+                min-height: 32px;
+                padding: 6px 14px;
+                border-radius: 6px;
+                border: 1px solid #c7d2e0;
+                background: #f8fafc;
+                color: #1f2937;
+            }
+            QPushButton:hover {
+                background: #eef2f7;
+            }
+        """)
     
     def create_model_tab(self):
         """创建模型配置标签页"""
         widget = QWidget()
         layout = QHBoxLayout(widget)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(14)
         
         # 左侧：模型列表
         left_layout = QVBoxLayout()
         
         model_list_label = QLabel("已配置的模型:")
         self.model_list = QListWidget()
+        self.model_list.setMinimumWidth(280)
+        self.model_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.model_list.itemClicked.connect(self.on_model_selected)
         
         # 添加、删除、编辑按钮
@@ -142,6 +219,10 @@ class SettingsWindow(QDialog):
         
         form_group = QGroupBox("模型配置")
         form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form_layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        form_layout.setHorizontalSpacing(14)
+        form_layout.setVerticalSpacing(12)
         
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("模型名称，例如：OpenAI GPT-4")
@@ -177,8 +258,8 @@ class SettingsWindow(QDialog):
         right_layout.addStretch()
         
         # 设置布局比例
-        layout.addLayout(left_layout, 1)
-        layout.addLayout(right_layout, 2)
+        layout.addLayout(left_layout, 2)
+        layout.addLayout(right_layout, 3)
         
         # 填充模型列表
         self.populate_model_list()
@@ -189,9 +270,15 @@ class SettingsWindow(QDialog):
         """创建AutoCAD配置标签页"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
         
         group = QGroupBox("AutoCAD连接设置")
         form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form_layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        form_layout.setHorizontalSpacing(14)
+        form_layout.setVerticalSpacing(12)
         
         self.connection_timeout_spin = QSpinBox()
         self.connection_timeout_spin.setRange(1, 60)
@@ -219,15 +306,22 @@ class SettingsWindow(QDialog):
         """创建通用设置标签页"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
         
         group = QGroupBox("通用设置")
         form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form_layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        form_layout.setHorizontalSpacing(14)
+        form_layout.setVerticalSpacing(12)
         
         self.language_combo = QComboBox()
         self.language_combo.addItems(["简体中文", "English"])
         
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["默认", "深色", "浅色"])
+        self.theme_combo.setToolTip("主题将在保存后应用到主界面")
         
         self.history_limit_spin = QSpinBox()
         self.history_limit_spin.setRange(10, 1000)
@@ -377,20 +471,40 @@ class SettingsWindow(QDialog):
             try:
                 with open(self.config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                
+
                 # 加载模型配置
                 self.models = [ModelConfig.from_dict(m) for m in config.get("models", [])]
-                
+
                 # 加载AutoCAD配置
-                autocad_config = config.get("autocad", {})
-                # 这里可以设置到UI上
-                
+                self.loaded_autocad_config = config.get("autocad", {})
+
                 # 加载通用配置
-                general_config = config.get("general", {})
-                # 这里可以设置到UI上
-                
+                self.loaded_general_config = config.get("general", {})
+
             except Exception as e:
                 print(f"加载配置失败: {e}")
+
+    def apply_loaded_config_to_ui(self):
+        """将配置文件中的值回填到控件"""
+        ac = self.loaded_autocad_config or {}
+        self.connection_timeout_spin.setValue(int(ac.get("connection_timeout", 10)))
+        self.command_delay_spin.setValue(int(ac.get("command_delay", 1)))
+        self.auto_connect_check.setChecked(bool(ac.get("auto_connect", False)))
+
+        g = self.loaded_general_config or {}
+        lang = g.get("language", "简体中文")
+        theme = g.get("theme", "默认")
+        history_limit = int(g.get("history_limit", 100))
+
+        lang_index = self.language_combo.findText(lang)
+        if lang_index >= 0:
+            self.language_combo.setCurrentIndex(lang_index)
+
+        theme_index = self.theme_combo.findText(theme)
+        if theme_index >= 0:
+            self.theme_combo.setCurrentIndex(theme_index)
+
+        self.history_limit_spin.setValue(history_limit)
     
     def get_selected_model(self):
         """获取当前选中的模型"""
