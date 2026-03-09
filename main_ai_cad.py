@@ -28,6 +28,8 @@ from ai_model import get_ai_model
 from ui.settings_window import SettingsWindow
 from ipc_bridge import AICADBridgeServer
 from core.config_db_store import ConfigDBStore
+from core.orchestrator import Orchestrator
+from core.ai_intent_analyzer import AIIntentAnalyzer
 
 class StatusIndicator(QWidget):
     """状态指示器控件"""
@@ -127,6 +129,7 @@ class AICADPlugin(QMainWindow):
         self._active_request_id = 0  # 当前有效请求ID（仅此ID可触发执行）
         self._bridge_last_ai_seq = 0
         self._bridge_last_ai_message = ""
+        self._orchestrator = None
 
         # 本地 IPC Bridge：供 AutoCAD C# 插件调用
         self.bridge = AICADBridgeServer(
@@ -307,6 +310,8 @@ class AICADPlugin(QMainWindow):
                 self.load_models()
                 # 重新初始化AI模型
                 self.init_ai_model()
+                # 设置变更后重建编排器
+                self._orchestrator = None
                 # 应用通用主题配置
                 self.apply_theme(self._get_saved_theme())
                 # 立即刷新数据库连接状态（无需重启）
@@ -568,17 +573,47 @@ class AICADPlugin(QMainWindow):
         self.setCentralWidget(central_widget)
         self.apply_theme(self._get_saved_theme())
     
-    def _get_saved_theme(self):
-        """读取已保存主题"""
+    def _load_file_text(self, filename: str) -> str:
+        """读取项目根目录文本文件（SOUL/USER/AGENTS）"""
+        try:
+            path = os.path.join(os.path.dirname(__file__), filename)
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    return f.read().strip()
+        except Exception:
+            pass
+        return ""
+
+    def _load_runtime_config(self):
+        """读取运行时配置：优先本地配置；若启用 DB 则尝试覆盖为 DB 启用配置。"""
+        cfg = {}
         try:
             config_file = os.path.join(os.path.dirname(__file__), "ai_config.json")
             if os.path.exists(config_file):
                 with open(config_file, 'r', encoding='utf-8') as f:
                     cfg = json.load(f)
-                return cfg.get("general", {}).get("theme", "默认")
+        except Exception:
+            cfg = {}
+
+        try:
+            db_cfg = cfg.get("database", {}) if isinstance(cfg, dict) else {}
+            if db_cfg.get("enabled"):
+                conn_str = (db_cfg.get("connection_string") or "").strip()
+                config_key = (db_cfg.get("config_key") or "app/global").strip()
+                if conn_str:
+                    store = ConfigDBStore(conn_str)
+                    active = store.get_active_config(config_key)
+                    if active and isinstance(active.get("config_json"), dict):
+                        return active.get("config_json")
         except Exception:
             pass
-        return "默认"
+
+        return cfg if isinstance(cfg, dict) else {}
+
+    def _get_saved_theme(self):
+        """读取已保存主题（支持 DB 覆盖）"""
+        cfg = self._load_runtime_config()
+        return (cfg.get("general", {}) or {}).get("theme", "默认") or "默认"
 
     def apply_theme(self, theme_name: str):
         """应用主题到主界面（不改变业务逻辑）"""
@@ -916,9 +951,68 @@ class AICADPlugin(QMainWindow):
             if len(self._chat_history) > self._chat_history_max:
                 self._chat_history = self._chat_history[-self._chat_history_max:]
 
+            # 主流程编排（Phase 2 起步）：优先处理 KB_QA，CAD 命令继续走既有模型链路
+            cfg = self._load_runtime_config()
+            db_cfg = cfg.get("database", {}) if isinstance(cfg, dict) else {}
+            if self._orchestrator is None:
+                self._orchestrator = Orchestrator(
+                    db_enabled=bool(db_cfg.get("enabled", False)),
+                    db_connection_string=(db_cfg.get("connection_string") or "").strip(),
+                    db_domain_code=(db_cfg.get("domain_code") or "").strip(),
+                )
+            analyzer = AIIntentAnalyzer(self.ai_model)
+            analysis = analyzer.analyze(command, {
+                "last_kb_query": getattr(self._orchestrator, "last_kb_query", ""),
+                "last_kb_doc_title": getattr(self._orchestrator, "last_kb_doc_title", ""),
+            })
+            orchestration_result = self._orchestrator.handle(command, analysis)
+            if isinstance(orchestration_result, dict):
+                route = orchestration_result.get("route")
+                if orchestration_result.get("intent") != "command_proxy" and route == "kb":
+                    # 需要用户澄清/补充时，直接使用编排器文本
+                    self.on_ai_result(
+                        {
+                            "intent": orchestration_result.get("intent", "chat"),
+                            "response": orchestration_result.get("response", ""),
+                            "commands": orchestration_result.get("commands", []),
+                            "request_id": int(request_id or self._active_request_id),
+                        }
+                    )
+                    return
+
+                if route == "kb_context":
+                    # 命中公司知识库后，直接基于证据输出，避免模型脱离事实胡乱发挥
+                    kb_context = orchestration_result.get("kb_context") or {}
+                    response_text = kb_context.get("summary", "")
+                    citations = kb_context.get("citations", [])
+                    if citations:
+                        source_lines = []
+                        for c in citations[:4]:
+                            source_lines.append(
+                                f"- {c.get('doc_title')}（{c.get('doc_code')}）{c.get('version_no')} {c.get('section')}"
+                            )
+                        response_text += "\n\n来源：\n" + "\n".join(source_lines)
+
+                    self.on_ai_result(
+                        {
+                            "intent": "chat",
+                            "response": response_text or "已命中知识库，但未生成可展示摘要。",
+                            "commands": [],
+                            "request_id": int(request_id or self._active_request_id),
+                        }
+                    )
+                    return
+
+            composed_context = {
+                "soul": self._load_file_text("SOUL.md"),
+                "user_profile": self._load_file_text("USER.md"),
+                "agent_rules": self._load_file_text("AGENTS.md"),
+                "instruction": "优先理解用户需求，给出完整建议；如用户询问公司内部标准，优先引导走公司知识库。"
+            }
+
             params = getattr(self.ai_model, "get_request_params", None)
             if callable(params):
-                req = self.ai_model.get_request_params(command, None, self._chat_history)
+                req = self.ai_model.get_request_params(command, composed_context, self._chat_history)
                 if req is not None:
                     url, headers, body = req
                     request = QNetworkRequest(QUrl(url))
@@ -929,7 +1023,7 @@ class AICADPlugin(QMainWindow):
                     self._current_reply.finished.connect(self._on_ai_network_finished)
                     return
             # 本地模型等无 get_request_params：仍用线程（本地逻辑很快，几乎不阻塞）
-            self.ai_thread = AIProcessingThread(self.ai_model, command, self._chat_history)
+            self.ai_thread = AIProcessingThread(self.ai_model, command, self._chat_history, composed_context)
             self.ai_thread.request_id = int(request_id or self._active_request_id)
             self.ai_thread.result_ready.connect(self.on_ai_result)
             self.ai_thread.finished.connect(self.on_ai_finished)
@@ -1005,6 +1099,37 @@ class AICADPlugin(QMainWindow):
         direct_cmds = ["line", "circle", "rectang", "move", "copy", "erase", "trim", "extend", "offset", "rotate", "mirror", "dimlinear"]
         return any(cmd in t for cmd in direct_cmds)
     
+    def clean_ai_response(self, response: str) -> str:
+        """清理模型泄露的思考过程，仅保留最终回答。"""
+        if not isinstance(response, str):
+            return str(response or "")
+        text = response.strip()
+        if not text:
+            return ""
+
+        # 优先提取“最终回答”段
+        for marker in ["【最终回答】", "最终回答：", "最终回答:"]:
+            if marker in text:
+                return text.split(marker)[-1].strip()
+
+        # 过滤明显思考链前缀行
+        thought_prefixes = [
+            "首先", "根据规则", "用户说", "回顾", "分析", "思考", "第一步", "第二步", "规则",
+            "you must", "json字段", "统一输出格式", "intent=", "commands"
+        ]
+        lines = text.splitlines()
+        kept = []
+        for ln in lines:
+            s = ln.strip().lower()
+            if not s:
+                continue
+            if any(s.startswith(p) for p in thought_prefixes):
+                continue
+            kept.append(ln)
+
+        cleaned = "\n".join(kept).strip()
+        return cleaned if cleaned else text
+
     def on_ai_result(self, result):
         """处理AI结果；若用户已点击停止或结果已过期则不再处理"""
         commands = result.get('commands', [])
@@ -1017,6 +1142,8 @@ class AICADPlugin(QMainWindow):
 
             response_text = result.get('response', '')
             intent = result.get('intent', 'chat')
+            response_text = self.clean_ai_response(response_text)
+
             self.add_chat_message("AI", response_text)
             self._bridge_last_ai_seq += 1
             self._bridge_last_ai_message = str(response_text or "")
@@ -1323,11 +1450,12 @@ class AIProcessingThread(QThread):
     """AI处理线程（用于本地模型等无 get_request_params 的情况）"""
     result_ready = pyqtSignal(dict)
 
-    def __init__(self, ai_model, command, history=None):
+    def __init__(self, ai_model, command, history=None, context=None):
         super().__init__()
         self.ai_model = ai_model
         self.command = command
         self.history = history or []
+        self.context = context or None
         self._stopped = False
         self.request_id = 0
     
@@ -1338,7 +1466,7 @@ class AIProcessingThread(QThread):
     def run(self):
         """运行线程"""
         try:
-            result = self.ai_model.process_command(self.command)
+            result = self.ai_model.process_command(self.command, self.context)
             if not isinstance(result, dict):
                 result = {"response": str(result), "commands": []}
             result["request_id"] = int(self.request_id or 0)

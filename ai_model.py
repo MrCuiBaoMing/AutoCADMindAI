@@ -269,7 +269,10 @@ class LMStudioModel(AIModel):
         if not self.endpoint:
             self.endpoint = "http://localhost:1234/v1"
 
-    _SYSTEM_PROMPT = """你是一个AutoCAD智能助手。你必须严格返回 JSON，不要返回纯文本。
+    _SYSTEM_PROMPT = """你是一个企业智能助手，擅长 CAD 与公司知识库问答，也能处理普通聊天、写作、解释类请求。
+
+你必须只输出一个 JSON 对象，不得输出分析过程、思考过程、规则解释、Markdown。
+严禁输出“首先，用户说…/根据规则…”等推理文本。
 
 统一输出格式：
 {
@@ -279,15 +282,10 @@ class LMStudioModel(AIModel):
 }
 
 规则：
-1) 仅当用户明确要求“立即执行CAD操作”时，intent=command，并给出 commands。
-2) 问候、咨询、解释、教学、问答、方案讨论，一律 intent=chat，commands 必须为空数组。
-3) 如果用户语义不清晰，默认 intent=chat，并在 response 里追问澄清，不要给 commands。
-4) command 模式下，response 简短说明将执行什么；chat 模式下，正常回答问题。
-
-示例：
-- 用户："你好" -> {"intent":"chat","response":"你好！我是AutoCAD助手，有什么可以帮助您的吗？","commands":[]}
-- 用户："如何画圆？" -> {"intent":"chat","response":"画圆可用 CIRCLE 命令，先指定圆心，再输入半径或直径。","commands":[]}
-- 用户："绘制一个圆形" -> {"intent":"command","response":"好的，我将为您启动画圆命令。","commands":["CIRCLE"]}"""
+1) 仅当用户明确要求立即执行 CAD 操作时，intent=command，并给出 commands。
+2) 其余全部请求（问候、写作、常识问答、知识咨询、方案讨论）都用 intent=chat，commands 必须为空数组。
+3) 用户询问公司内部标准/流程时，先给出检索建议或澄清问题，不要编造不存在的内部信息。
+4) 用户要求写作文、日志、总结时，直接给出成品，不要反问“是否可以”。"""
 
     def get_request_params(self, command: str, context: Optional[Dict[str, Any]] = None, history: Optional[list] = None) -> Optional[Tuple[str, Dict[str, str], bytes]]:
         if not self.endpoint:
@@ -347,6 +345,8 @@ class LMStudioModel(AIModel):
                     "response": command_data.get("response", assistant_message),
                     "commands": commands
                 }
+
+            # 若未返回JSON，直接按普通聊天文本返回，避免误拦截正常回答
             return {"intent": "chat", "response": assistant_message, "commands": []}
         except json.JSONDecodeError as e:
             return {"response": f"JSON解析失败: {str(e)}", "commands": []}
