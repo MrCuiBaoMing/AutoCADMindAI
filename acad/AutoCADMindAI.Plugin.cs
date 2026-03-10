@@ -60,16 +60,45 @@ namespace AutoCADMindAIPlugin
             ed?.WriteMessage("\n[AutoCADMindAI] AIMIND 已触发");
             AppendStartupLog("C#", "AIMIND command triggered.");
 
-            if (EnsureBridgeReady(ed))
+            // 先显示面板
+            EnsurePalette();
+            _aiPalette.Visible = true;
+            _aiPalette.KeepFocus = true;
+            _aiPaletteControl?.SetStatus("正在启动服务...");
+            Write("正在后台启动 AI 服务...", ed);
+
+            // 异步启动 bridge，不阻塞主线程
+            System.Threading.Tasks.Task.Run(() =>
             {
-                _lastAiSeq = 0; // Python 侧重启后序号会归零，这里同步重置避免错过新消息
-                EnsurePalette();
-                _aiPalette.Visible = true;
-                _aiPalette.KeepFocus = true;
-                _aiPaletteControl?.SetStatus("就绪");
-                Write("AI 面板已就绪，你可以直接输入需求。", ed);
-                AppendStartupLog("C#", "AIMIND flow ready: bridge alive and palette shown.");
-            }
+                var bridgeOk = EnsureBridgeReady(ed);
+                
+                // 回到 UI 线程更新状态
+                if (_aiPaletteControl != null)
+                {
+                    if (_aiPaletteControl.InvokeRequired)
+                    {
+                        _aiPaletteControl.Invoke(new Action(() =>
+                        {
+                            _aiPaletteControl.SetStatus(bridgeOk ? "就绪" : "启动失败");
+                            if (bridgeOk)
+                            {
+                                _aiPaletteControl.AppendSystemMessage("AI 服务已就绪，你可以直接输入需求。", false);
+                            }
+                            else
+                            {
+                                _aiPaletteControl.AppendSystemMessage("AI 服务启动失败，请查看日志。", true);
+                            }
+                        }));
+                    }
+                }
+                
+                if (bridgeOk)
+                {
+                    _lastAiSeq = 0;
+                }
+            });
+            
+            AppendStartupLog("C#", "AIMIND flow: palette shown, bridge starting async.");
         }
 
         [CommandMethod("AISTART", CommandFlags.Modal)]
@@ -194,76 +223,96 @@ namespace AutoCADMindAIPlugin
 
             if (IsBridgeAlive()) return true;
 
-            // 1) 优先直接拉起 main_ai_cad.py，避免 start.bat/start.py 的编码与阻塞差异
-            var mainPy = Path.Combine(pluginDir, "main_ai_cad.py");
-            if (File.Exists(mainPy))
+            // 尝试多个可能的路径
+            var searchPaths = new[]
             {
-                try
+                pluginDir,
+                Path.GetFullPath(Path.Combine(pluginDir, "..")),
+                Path.GetFullPath(Path.Combine(pluginDir, "..", "..")),
+                @"e:\user\桌面\AutoCADMindAI",
+                @"e:\user\桌面\AutoCADMindAI\dist\AutoCADMindAI",
+            };
+
+            foreach (var searchDir in searchPaths)
+            {
+                if (string.IsNullOrEmpty(searchDir) || !Directory.Exists(searchDir))
+                    continue;
+
+                AppendStartupLog("C#", "Checking path: " + searchDir);
+
+                // 优先使用 start.bat
+                var startBat = Path.Combine(searchDir, "start.bat");
+                if (File.Exists(startBat))
                 {
-                    Process.Start(new ProcessStartInfo
+                    try
                     {
-                        FileName = "py",
-                        Arguments = "\"" + mainPy + "\"",
-                        WorkingDirectory = pluginDir,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WindowStyle = ProcessWindowStyle.Hidden
-                    });
-                    Write("已后台通过 py 启动 main_ai_cad.py。", ed);
-                    AppendStartupLog("C#", "Background launch main_ai_cad.py via py success.");
-                    return true;
-                }
-                catch (System.Exception ex)
-                {
-                    AppendStartupLog("C#", "Launch main_ai_cad.py via py failed: " + ex.Message);
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = startBat,
+                            WorkingDirectory = searchDir,
+                            UseShellExecute = true,
+                            CreateNoWindow = true,
+                            WindowStyle = ProcessWindowStyle.Hidden
+                        });
+                        Write("已后台启动 start.bat。", ed);
+                        AppendStartupLog("C#", "Background launch start.bat success from: " + searchDir);
+                        return true;
+                    }
+                    catch (System.Exception ex)
+                    {
+                        AppendStartupLog("C#", "Background launch start.bat failed: " + ex.Message);
+                    }
                 }
 
-                try
+                // 回退：直接拉起 main_ai_cad.py
+                var mainPy = Path.Combine(searchDir, "main_ai_cad.py");
+                if (File.Exists(mainPy))
                 {
-                    Process.Start(new ProcessStartInfo
+                    // 尝试 py
+                    try
                     {
-                        FileName = "python",
-                        Arguments = "\"" + mainPy + "\"",
-                        WorkingDirectory = pluginDir,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WindowStyle = ProcessWindowStyle.Hidden
-                    });
-                    Write("已后台通过 python 启动 main_ai_cad.py。", ed);
-                    AppendStartupLog("C#", "Background launch main_ai_cad.py via python success.");
-                    return true;
-                }
-                catch (System.Exception ex)
-                {
-                    AppendStartupLog("C#", "Launch main_ai_cad.py via python failed: " + ex.Message);
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = "py",
+                            Arguments = "\"" + mainPy + "\"",
+                            WorkingDirectory = searchDir,
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            WindowStyle = ProcessWindowStyle.Hidden
+                        });
+                        Write("已后台通过 py 启动 main_ai_cad.py。", ed);
+                        AppendStartupLog("C#", "Background launch main_ai_cad.py via py success from: " + searchDir);
+                        return true;
+                    }
+                    catch (System.Exception ex)
+                    {
+                        AppendStartupLog("C#", "Launch main_ai_cad.py via py failed: " + ex.Message);
+                    }
+
+                    // 尝试 python
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = "python",
+                            Arguments = "\"" + mainPy + "\"",
+                            WorkingDirectory = searchDir,
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            WindowStyle = ProcessWindowStyle.Hidden
+                        });
+                        Write("已后台通过 python 启动 main_ai_cad.py。", ed);
+                        AppendStartupLog("C#", "Background launch main_ai_cad.py via python success from: " + searchDir);
+                        return true;
+                    }
+                    catch (System.Exception ex)
+                    {
+                        AppendStartupLog("C#", "Launch main_ai_cad.py via python failed: " + ex.Message);
+                    }
                 }
             }
 
-            // 2) 回退 bat（保持兼容）
-            var startBat = Path.Combine(pluginDir, "start.bat");
-            if (File.Exists(startBat))
-            {
-                try
-                {
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = startBat,
-                        WorkingDirectory = pluginDir,
-                        UseShellExecute = true,
-                        CreateNoWindow = true,
-                        WindowStyle = ProcessWindowStyle.Hidden
-                    });
-                    Write("已后台启动 start.bat。", ed);
-                    AppendStartupLog("C#", "Background launch start.bat success.");
-                    return true;
-                }
-                catch (System.Exception ex)
-                {
-                    AppendStartupLog("C#", "Background launch start.bat failed: " + ex.Message);
-                }
-            }
-
-            AppendStartupLog("C#", "Missing launch target: main_ai_cad.py/start.bat not found.");
+            AppendStartupLog("C#", "Missing launch target: main_ai_cad.py/start.bat not found in any search path.");
             Write("未找到可启动文件（main_ai_cad.py 或 start.bat）。请检查发布目录是否完整。", ed);
             return false;
         }
@@ -303,7 +352,7 @@ namespace AutoCADMindAIPlugin
             if (!EnsureBridgeReady(ed))
             {
                 _aiPaletteControl?.SetStatus("未连接");
-                _aiPaletteControl?.AppendSystemMessage("AI 服务未连接，请先点击“启动服务”或检查 bridge_start.log。", true);
+                _aiPaletteControl?.AppendSystemMessage("AI 服务未连接，请先点击\"启动服务\"或检查 bridge_start.log。", true);
                 _aiPaletteControl?.SetBusy(false);
                 return;
             }
@@ -687,7 +736,7 @@ namespace AutoCADMindAIPlugin
             panel.Controls.Add(_statusLabel, 0, 5);
 
             Controls.Add(panel);
-            AppendSystemMessage("欢迎使用 AutoCADMindAI。建议先点击“检测连接”或“启动服务”。", false);
+            AppendSystemMessage("欢迎使用 AutoCADMindAI。建议先点击\"检测连接\"或\"启动服务\"。", false);
         }
 
         private static Button CreateButton(string text, bool isPrimary)

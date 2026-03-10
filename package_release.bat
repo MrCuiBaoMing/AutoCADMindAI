@@ -40,7 +40,9 @@ copy /y "autocad_controller.py" "%DIST%\" >nul
 copy /y "config_manager.py" "%DIST%\" >nul
 copy /y "ai_config.json" "%DIST%\" >nul
 
-if exist "ui" xcopy /e /i /y "ui" "%DIST%\ui" >nul
+if exist "ui" xcopy /e /i /y "ui" "%DIST%\ui\" >nul
+if exist "core" xcopy /e /i /y "core" "%DIST%\core\" >nul
+if exist "connectors" xcopy /e /i /y "connectors" "%DIST%\connectors\" >nul
 
 (
   echo AutoCADMindAI package
