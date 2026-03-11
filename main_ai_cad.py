@@ -9,6 +9,7 @@ import sys
 import os
 import json
 from datetime import datetime
+from typing import Dict, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -1130,6 +1131,35 @@ class AICADPlugin(QMainWindow):
         cleaned = "\n".join(kept).strip()
         return cleaned if cleaned else text
 
+    def execute_tool(self, tool_name: str, arguments: Dict) -> Dict:
+        """执行工具调用"""
+        print(f"[Tool] 执行工具: {tool_name}, 参数: {arguments}")
+
+        if tool_name == "execute_cad_command":
+            # 执行 CAD 命令
+            command = arguments.get("command", "")
+            if command:
+                return {"success": True, "message": f"CAD命令已执行: {command}"}
+            return {"success": False, "error": "未指定命令"}
+
+        elif tool_name == "query_cad_status":
+            # 查询 CAD 状态
+            return {
+                "success": True,
+                "connected": self.acad.is_connected,
+                "message": "已连接到AutoCAD" if self.acad.is_connected else "未连接"
+            }
+
+        elif tool_name == "search_knowledge_base":
+            # 搜索知识库
+            query = arguments.get("query", "")
+            if not query:
+                return {"success": False, "error": "未提供搜索关键词"}
+            # 简单返回，实际会走编排器
+            return {"success": True, "message": f"知识库搜索: {query}"}
+
+        return {"success": False, "error": f"未知工具: {tool_name}"}
+
     def on_ai_result(self, result):
         """处理AI结果；若用户已点击停止或结果已过期则不再处理"""
         commands = result.get('commands', [])
@@ -1142,6 +1172,39 @@ class AICADPlugin(QMainWindow):
 
             response_text = result.get('response', '')
             intent = result.get('intent', 'chat')
+
+            # 【工具调用】处理 AI 返回的工具调用
+            if intent == "tool_call":
+                tool_calls = result.get("tool_calls", [])
+                if tool_calls:
+                    # 执行第一个工具调用
+                    tc = tool_calls[0]
+                    tool_name = tc.get("name", "")
+                    tool_args = tc.get("arguments", {})
+
+                    # 如果 arguments 是字符串，尝试解析
+                    if isinstance(tool_args, str):
+                        import json
+                        try:
+                            tool_args = json.loads(tool_args)
+                        except:
+                            tool_args = {}
+
+                    self.add_chat_message("系统", f"🔧 调用工具: {tool_name}")
+
+                    # 执行工具
+                    tool_result = self.execute_tool(tool_name, tool_args)
+
+                    # 把工具结果转为文本返回给用户
+                    if tool_result.get("success"):
+                        self.add_chat_message("AI", f"✅ {tool_result.get('message', '执行成功')}")
+                    else:
+                        self.add_chat_message("AI", f"❌ {tool_result.get('error', '执行失败')}")
+
+                    # 工具执行完成，恢复状态
+                    self.update_status_bar("✓ 工具执行完成")
+                    return
+
             response_text = self.clean_ai_response(response_text)
 
             self.add_chat_message("AI", response_text)

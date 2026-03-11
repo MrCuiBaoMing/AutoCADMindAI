@@ -10,7 +10,7 @@ import os
 import json
 import re
 import requests
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 def _extract_command_json(text: str) -> Optional[Dict[str, Any]]:
     """从模型回复中稳健提取 JSON 对象（支持 response 内多行、引号、括号），只返回含 response/commands 的 dict。"""
@@ -265,29 +265,86 @@ class LMStudioModel(AIModel):
         self.api_key = api_key
         self.endpoint = endpoint
         self.model_name = model_name
+        self.tools = []  # 工具清单
 
         if not self.endpoint:
             self.endpoint = "http://localhost:1234/v1"
 
-    _SYSTEM_PROMPT = """你是一个企业智能助手，擅长 CAD 与公司知识库问答，也能处理普通聊天、写作、解释类请求。
+    def set_tools(self, tools: List[Dict]):
+        """设置工具清单（用于 Function Calling）"""
+        self.tools = tools
 
-你必须只输出一个 JSON 对象，不得输出分析过程、思考过程、规则解释、Markdown。
-严禁输出“首先，用户说…/根据规则…”等推理文本。
+    def _build_tools_prompt(self) -> str:
+        """构建工具描述文本（用于不支持 Function Calling 的模型）"""
+        if not self.tools:
+            return ""
+        desc = "\n可用工具：\n"
+        for tool in self.tools:
+            name = tool.get("name", "")
+            desc += f"- {name}: {tool.get('description', '')}\n"
+            params = tool.get("parameters", {}).get("properties", {})
+            if params:
+                desc += "  参数: " + ", ".join(params.keys()) + "\n"
+        return desc
 
-统一输出格式：
-{
-  "intent": "chat" | "command",
-  "response": "给用户显示的自然语言",
-  "commands": ["AutoCAD命令1", "AutoCAD命令2"]
-}
+    _SYSTEM_PROMPT = """你是一个AutoCAD智能助手。
 
-规则：
-1) 仅当用户明确要求立即执行 CAD 操作时，intent=command，并给出 commands。
-2) 其余全部请求（问候、写作、常识问答、知识咨询、方案讨论）都用 intent=chat，commands 必须为空数组。
-3) 用户询问公司内部标准/流程时，先给出检索建议或澄清问题，不要编造不存在的内部信息。
-4) 用户要求写作文、日志、总结时，直接给出成品，不要反问“是否可以”。"""
+你只能输出纯JSON，不能输出任何其他内容、解释、推理过程。
 
-    def get_request_params(self, command: str, context: Optional[Dict[str, Any]] = None, history: Optional[list] = None) -> Optional[Tuple[str, Dict[str, str], bytes]]:
+禁止输出：
+- "首先"、"根据"、"因为"、"所以"等推理词
+- 任何解释你为什么这样回答的文字
+- JSON以外的任何内容
+
+输出格式（必须是这个格式）：
+{"intent":"chat","response":"你的回复","commands":[]}
+
+示例：
+用户：你好
+输出：{"intent":"chat","response":"你好！有什么可以帮你的吗？","commands":[]}
+
+用户：画一个圆
+输出：{"intent":"command","response":"好的，我来画圆","commands":["CIRCLE"]}"""
+
+    def _extract_tool_call(self, text: str) -> Optional[Dict[str, Any]]:
+        """从模型输出中提取工具调用"""
+        text = text.strip()
+
+        # 尝试直接解析为 JSON
+        try:
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                # 检查是否是工具调用格式
+                if "tool_calls" in obj:
+                    return obj["tool_calls"]
+                if "tool" in obj and "arguments" in obj:
+                    return [obj]
+        except:
+            pass
+
+        # 尝试从文本中提取工具调用（兼容格式）
+        # 格式: {"tool":"execute_cad_command","arguments":{"command":"CIRCLE"}}
+        import re
+        patterns = [
+            r'"tool"\s*:\s*"([^"]+)"',
+            r'"function"\s*:\s*"([^"]+)"',
+            r'"name"\s*:\s*"([^"]+)"'
+        ]
+        for pattern in patterns:
+            matches = re.findall(pattern, text)
+            if matches:
+                # 尝试提取 arguments
+                args_match = re.search(r'"arguments"\s*:\s*(\{[^}]+\})', text)
+                if args_match:
+                    try:
+                        args = json.loads(args_match.group(1))
+                        return [{"function": {"name": matches[0], "arguments": args}}]
+                    except:
+                        pass
+
+        return None
+
+    def get_request_params(self, command: str, context: Optional[Dict[str, Any]] = None, history: Optional[list] = None, tools: Optional[List[Dict]] = None) -> Optional[Tuple[str, Dict[str, str], bytes]]:
         if not self.endpoint:
             return None
         api_url = f"{self.endpoint.rstrip('/')}/chat/completions"
@@ -295,19 +352,44 @@ class LMStudioModel(AIModel):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
         }
-        user_prompt = f"用户请求: {command}\n"
+
+        # 【优化】只提取关键路由信息，忽略冗长的文档内容
+        route_hint = ""
         if context:
-            user_prompt += f"上下文: {json.dumps(context)}\n"
+            route = context.get("route", "")
+            analysis = context.get("analysis", {})
+            if route == "kb":
+                route_hint = "[知识库模式] 用户在询问公司内部标准/文档。"
+            elif route == "cad":
+                route_hint = "[CAD模式] 用户在请求执行AutoCAD操作。"
+
+        # 构建用户提示：只包含当前输入和必要的路由提示
+        user_prompt = command
+        if route_hint:
+            user_prompt = f"{route_hint}\n\n用户请求: {command}"
+
+        # 【工具调用】添加工具描述
+        tools_to_use = tools or self.tools
+        tools_prompt = self._build_tools_prompt()
+        if tools_prompt:
+            user_prompt = f"{tools_prompt}\n\n{user_prompt}"
+
         messages = [{"role": "system", "content": self._SYSTEM_PROMPT}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_prompt})
+
         data = {
             "model": self.model_name or "qwen2.5-0.5b-instruct",
             "messages": messages,
-            "temperature": 0.1,
+            "temperature": 0,  # 降低温度，减少随机性/推理过程
             "max_tokens": 500
         }
+
+        # 如果有工具，尝试使用 tool_choice（部分模型支持）
+        if tools_to_use:
+            data["tools"] = tools_to_use
+
         return api_url, headers, json.dumps(data, ensure_ascii=False).encode("utf-8")
 
     def parse_response(self, data: bytes) -> Dict[str, Any]:
@@ -322,12 +404,46 @@ class LMStudioModel(AIModel):
                 msg = err.get("message", "未知错误") if isinstance(err, dict) else (err if isinstance(err, str) else "未知错误")
                 return {"response": f"API错误: {msg}", "commands": []}
             choice = result["choices"][0]
-            if isinstance(choice, dict) and "message" in choice:
-                assistant_message = choice["message"].get("content", "")
-            elif isinstance(choice, str):
-                assistant_message = choice
+
+            # 【工具调用】检测模型是否返回了工具调用
+            message = choice.get("message", {})
+            tool_calls = message.get("tool_calls", [])
+
+            # 1. 检查 OpenAI 格式的工具调用
+            if tool_calls:
+                parsed_calls = []
+                for tc in tool_calls:
+                    func = tc.get("function", {})
+                    parsed_calls.append({
+                        "name": func.get("name", ""),
+                        "arguments": func.get("arguments", {})
+                    })
+                return {
+                    "intent": "tool_call",
+                    "tool_calls": parsed_calls,
+                    "response": "需要执行工具",
+                    "commands": []
+                }
+
+            # 2. 普通消息处理
+            if isinstance(message, dict):
+                assistant_message = message.get("content", "")
+            elif isinstance(message, str):
+                assistant_message = message
             else:
-                return {"response": f"响应格式异常: {choice}", "commands": []}
+                assistant_message = str(choice.get("content", ""))
+
+            # 2.1 尝试解析自定义格式的工具调用（部分模型可能输出 JSON 格式的工具调用）
+            if assistant_message:
+                custom_tool_call = self._extract_tool_call(assistant_message)
+                if custom_tool_call:
+                    return {
+                        "intent": "tool_call",
+                        "tool_calls": custom_tool_call,
+                        "response": "需要执行工具",
+                        "commands": []
+                    }
+
             # 稳健解析：先尝试整段为 JSON，再尝试提取首段完整 JSON 对象（支持 response 内多字符、引号、括号）
             command_data = _extract_command_json(assistant_message)
             if command_data is not None:

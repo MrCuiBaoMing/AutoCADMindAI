@@ -12,6 +12,7 @@ dist/
 
 # Configuration files
 config.ini
+ai_config.json
 
 # IDE
 .vscode/
