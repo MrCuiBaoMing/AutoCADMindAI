@@ -1,163 +1,165 @@
-# AI CAD - AutoCAD智能助手
+# AI CAD - AutoCAD 智能助手
 
-一款基于AI大模型的AutoCAD智能控制工具，通过自然语言与AI对话，自动执行CAD命令。
+AutoCADMindAI 是一个基于 AI 大模型的 AutoCAD 智能助手：
+通过自然语言与 AI 对话，自动生成 AutoCAD 命令并驱动 AutoCAD 执行。
+它支持本地模型、OpenAI/Azure OpenAI、LM Studio 等多种模型，并且可与 AutoCAD 通过 COM + 本地 HTTP 桥无缝联动。
 
-## 功能特点
+---
 
-### 🤖 AI智能对话
-- 支持多种AI大模型（OpenAI、Azure OpenAI、LM Studio、本地模型）
-- 自然语言交互，无需记忆复杂命令
-- 智能理解用户意图，自动转换为CAD命令
+## ✅ 核心特性
 
-### 🎨 现代化界面
-- 扁平化设计，简洁美观
-- 窗口置顶，不遮挡AutoCAD操作
-- 支持最大化/最小化/拖动
-- 实时状态指示器
+### 🧠 智能语义驱动（自然语言→AutoCAD命令）
+- 用户输入“画一个圆形、半径 10”即可自动生成 `CIRCLE` 命令并执行
+- 可选择多种大模型：本地规则模型 / LM Studio / OpenAI / Azure OpenAI
+- 支持命令型响应（`intent=command`）与对话型响应（`intent=chat`）
 
-### ⚡ 快捷功能
-- 常用命令一键执行
-- 命令历史记录
-- 双击功能树快速执行
+### 🧩 AutoCAD 集成
+- 自动连接正在运行的 AutoCAD（兼容多版本）
+- 通过 `SendCommand` + `SendStringToExecute` 执行命令
+- 支持“停止”/“取消”命令（通过 COM 取消 + 键盘消息双保险）
 
-### 🔧 AutoCAD集成
-- 自动连接运行中的AutoCAD
-- 支持AutoCAD命令执行
-- 实时反馈执行状态
+### 🌐 本地桥接服务（HTTP）
+- AutoCAD C# 插件可通过 HTTP 调用 Python UI（`/show`、`/chat`、`/stop`）
+- 让 AI 助手与 AutoCAD 操作在同一窗口中协同工作
 
-## 快速开始
+### 📚 企业知识库支持（可选）
+- 集成 SQL Server 知识库检索（带领域/文档/章节级交互）
+- 支持「问公司标准/流程」类型问答，自动进行知识库检索
 
-### 环境要求
+---
+
+## 🚀 快速上手
+
+### 1) 环境要求
+- Windows + AutoCAD 2018+
 - Python 3.8+
-- AutoCAD 2018+
+- 推荐使用 `venv` 或其他虚拟环境
 
-### 安装依赖
-```bash
-pip install PyQt6 pywin32 requests
-```
+### 2) 安装依赖
+```powershell
+pip install -r requirements.txt
+``` 
+（如果没有 `requirements.txt`，可单独安装：`PyQt6 pywin32 requests`）
 
-### 启动程序
-```bash
+### 3) 启动方式
+#### (A) 直接运行 Python UI：
+```powershell
 python main_ai_cad.py
 ```
 
-### 使用方法
-1. 启动AutoCAD
-2. 运行AI CAD程序，自动连接AutoCAD
-3. 在设置中配置AI模型（API Key等）
-4. 在输入框输入自然语言指令，如：
-   - "画一个圆形"
-   - "绘制一条直线"
-   - "如何标注尺寸？"
+#### (B) 从 AutoCAD 侧启动（推荐）
+1. 运行 `build_plugin.bat` 编译插件（或直接使用已编译的 `AutoCADMindAI.Plugin.dll`）
+2. 在 AutoCAD 命令行输入：
+   - `NETLOAD` → 选择 `AutoCADMindAI.Plugin.dll`
+3. 执行命令：
+   - `AIMIND`：打开 AI 窗口（推荐）
+   - `AICHAT`：输入一句话发送给 AI
+   - `AISTOP`：停止当前执行
 
-## 项目结构
+> 插件会自动在 DLL 同目录寻找 `start.py`/`start.bat`，无需手动修改路径。
+
+---
+
+## 🧱 项目目录说明
 
 ```
-AutoOffice/
-├── main_ai_cad.py        # 主程序入口
-├── ai_model.py           # AI模型接口
-├── autocad_controller.py # AutoCAD控制器
-├── config_manager.py     # 配置管理
-├── ai_config.json        # AI模型配置
-├── config.ini            # 程序配置
-├── requirements.txt      # 依赖列表
-├── acad/
-│   └── AI_CAD.lsp        # AutoCAD插件入口
-└── ui/
-    ├── __init__.py
-    └── settings_window.py # 设置窗口
+AutoCADMindAI/
+├── main_ai_cad.py             # 主程序入口（PyQt6 UI + 逻辑）
+├── ai_model.py                # AI 模型适配层（OpenAI / Azure / LM Studio / 本地）
+├── autocad_controller.py      # AutoCAD COM 控制器（执行命令 / 取消命令）
+├── ipc_bridge.py              # 本地 HTTP 桥（供 C# 插件调用）
+├── core/                      # 核心流程（意图识别 + 编排 + 配置中心）
+│   ├── orchestrator.py        # 业务流程编排（KB/命令/对话路由）
+│   ├── ai_intent_analyzer.py  # AI 意图分析器
+│   └── config_db_store.py     # SQL Server 配置中心
+├── connectors/                # 各类外部数据源（知识库等）
+│   └── kb_sqlserver/          # SQL Server 知识库检索实现
+├── ui/                        # UI 窗口 & 设置
+│   └── settings_window.py
+├── acad/                      # AutoCAD C# 插件项目
+│   └── AutoCADMindAI.Plugin.cs
+├── ai_config.json             # 模型 / AutoCAD / 数据库配置
+├── config.ini                 # 窗口尺寸+连接配置（简单持久化）
+├── requirements.txt           # Python 依赖（可用 pip install -r）
+└── README.md                  # 本文档
 ```
 
-## 配置AI模型
+---
 
-### LM Studio（本地模型）
-1. 下载并安装LM Studio
-2. 加载支持的模型（如Qwen、Gemma等）
-3. 启动本地服务器（默认端口1234）
-4. 在设置中添加模型配置：
-   - 类型：LM Studio
-   - 端点：http://localhost:1234/v1
-   - API Key：从LM Studio获取
+## ⚙️ 配置说明（关键）
 
-### OpenAI
-1. 获取OpenAI API Key
-2. 在设置中添加模型配置：
-   - 类型：OpenAI
-   - API Key：sk-xxx
-   - 模型：gpt-4 / gpt-3.5-turbo
+### `ai_config.json`（首选配置）
+- **models**：多模型配置列表（本地/OpenAI/Azure/LM Studio）
+- **autocad**：连接超时、命令执行延迟、是否自动连接
+- **database**：知识库（SQL Server）启用配置
+- **general**：主题、语言、对话历史长度
 
-## 快捷键
+> 程序会优先从数据库配置中心读取（如果启用了 `database.enabled`），否则使用本地 `ai_config.json`。
 
-- `Enter` - 发送消息
-- `双击标题栏` - 最大化/还原窗口
-
-## 状态指示
-
-- 🟢 绿色 - 已连接AutoCAD
-- 🔴 红色 - 未连接
-- 🔵 蓝色旋转 - 正在处理中
-
-## 方案C（长期架构）：AutoCAD C# DLL + Python UI保留
-
-你当前项目已支持该架构的第一版骨架：
-
-- Python UI 继续作为主交互界面（`main_ai_cad.py`）
-- Python UI 内嵌本地桥接服务（`ipc_bridge.py`，默认 `http://127.0.0.1:8765`）
-- AutoCAD 侧使用 C# 插件 DLL（`acad/AutoCADMindAI.Plugin.cs`）
-
-### Python Bridge API
-
-- `GET /health`：健康检查
-- `POST /show`：显示并激活 Python UI
-- `POST /chat`：发送文本到 UI（等价于用户输入后点发送）
-- `POST /stop`：触发 UI 停止逻辑
-
-请求示例：
-
+#### 典型 LM Studio 配置
 ```json
-{"text":"绘制一个圆形"}
+{
+  "model_type": "lmstudio",
+  "endpoint": "http://localhost:1234/v1",
+  "api_key": "",
+  "model_name": "qwen/qwen3-4b-thinking-2507"
+}
 ```
 
-### AutoCAD C# 插件命令
+---
 
-当前示例提供三个命令：
+## 🛠️ 各模块功能说明（快速定位）
 
-- `AIMIND`：确保 Python UI 启动并显示
-- `AICHAT`：在 AutoCAD 命令行输入一句话并转发给 Python UI
-- `AISTOP`：请求停止
+### 🔹 AI 模型层（`ai_model.py`）
+- 统一接口 `process_command()` 和异步 `get_request_params()`
+- 支持多种模型：本地规则 / OpenAI / Azure / LM Studio
+- LM Studio 输出 JSON 格式 (`intent`/`response`/`commands`)，从而安全判断是否执行 CAD 命令
 
-### 一键编译 / 一键打包（推荐）
+### 🔹 AutoCAD 控制层（`autocad_controller.py`）
+- 通过 COM 连接 AutoCAD
+- 管理命令发送、文档刷新、失败重试
+- 提供强制取消：COM `^C^C` + 键盘 `ESC`（确保可以中断长时间执行的命令）
 
-项目根目录新增了两个脚本：
+### 🔹 流程编排层（`core/orchestrator.py`）
+- 意图识别 → 路由到知识库/命令/对话
+- 支持多轮引导：选择领域、文档、章节，用自然语言继续筛选
+- 与知识库检索结合，输出“知识库摘要 + 引用来源”
 
-- `build_plugin.bat`：一键编译 C# 插件 DLL
-- `package_release.bat`：一键打包可交付目录（自动先编译）
+### 🔹 本地桥接（`ipc_bridge.py`）
+- 本地 HTTP 服务（`127.0.0.1:8765`）
+- 提供 UI 展示 / 停止 / 发送请求接口
 
-> 首次使用如果提示找不到 MSBuild，请安装 Build Tools for Visual Studio（MSBuild + .NET Framework 4.8）。
+### 🔹 AutoCAD 插件（`acad/AutoCADMindAI.Plugin.cs`）
+- AutoCAD 命令宏：AIMIND/AICHAT/AISTOP 等
+- 负责启动 Python UI 并检查桥接是否就绪
 
-### 给新手的最简使用方式（推荐）
+---
 
-你只需要记住 AutoCAD 的一个命令：`NETLOAD`
+## 📌 常见使用场景
 
-1. 把下面 4 个文件放到同一个目录：
-   - `AutoCADMindAI.Plugin.dll`
-   - `main_ai_cad.py`
-   - `start.py`
-   - `start.bat`
-2. 在 AutoCAD 命令行输入 `NETLOAD`，选择并加载 `AutoCADMindAI.Plugin.dll`
-3. 加载后，Ribbon 顶部会出现 `MindAI` 选项卡（按钮：打开AI / 发送到AI / 停止）
-4. 推荐命令顺序：`AISTART`（启动Python）→ `AIPING`（检查桥接）→ `AIMIND`（唤起窗口）
-5. 你也可以使用：`AICHAT` / `AISTOP`
+### ✅ 快速绘图（直接发 CAD 命令）
+```text
+请帮我画一个半径 10 的圆
+```
 
-> 插件会自动在 DLL 同目录寻找 `start.bat`/`start.py`，不需要手改 Python 路径。
+### ✅ 问公司流程/标准（知识库检索）
+```text
+公司中线CAD的节点标注规范是什么？
+```
 
-### 构建 C# 插件（开发者）
+### ✅ 核心调试命令（AutoCAD）
+- `AIPING`：检查桥接服务是否可用
+- `AISTOP`：停止当前执行
 
-1. 使用 Visual Studio 打开 `acad/AutoCADMindAI.Plugin.csproj`
-2. 按本机 AutoCAD 安装目录修改 `AcMgd.dll / AcDbMgd.dll` 的 `HintPath`
-3. 编译生成 `AutoCADMindAI.Plugin.dll`
-4. 将 DLL 复制到你的部署目录后，按上面的 `NETLOAD` 步骤使用
+---
 
-## 许可证
+## 🧩 进阶扩展建议
+- 🚀 让插件支持“命令预览 + 确认执行”模式，避免误操作
+- 🧠 增强意图判断（如：`execute`/`ask` 模式区分）
+- 📦 打包为独立可执行（PyInstaller + 安装器）
+- 🌐 增加外部搜索（Web/ERP/文件检索）能力
 
+---
+
+## 📄 许可证
 MIT License
