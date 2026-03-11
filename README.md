@@ -31,6 +31,7 @@ AutoCADMindAI 是一个基于 AI 大模型的 AutoCAD 智能助手：
 ## 🚀 快速上手
 
 ### 1) 环境要求
+-启动前请优先配置ai_config.json中的本地数据库
 - Windows + AutoCAD 2018+
 - Python 3.8+
 - 推荐使用 `venv` 或其他虚拟环境
