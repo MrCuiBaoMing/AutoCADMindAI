@@ -10,21 +10,19 @@ from core.intent_router import detect_intent
 from connectors.kb_sqlserver.retriever import KBRetriever
 
 
-# Web 搜索 Prompt 模板
-WEB_SEARCH_PROMPT = """你是一个智能助手。以下是从互联网上检索到的最新信息:
+# Web 搜索 Prompt 模板（优化：更简洁，减少 token 数量）
+WEB_SEARCH_PROMPT = """基于以下网络信息回答问题:
 
 {web_content}
 
-用户问题: {question}
+问题: {question}
 
-请基于检索结果回答:
-1. 如果信息充足且可信,给出清晰、简洁的中文回答
-2. 如果信息存在矛盾,说明不同说法
-3. 如果信息过时或不完整,请明确告知
-4. 回答中可标注信息来源(如"根据XX网...")
-5. 回答长度控制在 2-3 句话内
+要求:
+1. 用1-2句话简洁回答
+2. 标注信息来源
+3. 信息不足时直接说明
 
-你的回答:"""
+回答:"""
 
 
 class Orchestrator:
@@ -170,14 +168,15 @@ class Orchestrator:
         }
 
     def _build_web_content(self, results: List[Dict[str, Any]]) -> str:
-        """构建网络检索结果文本"""
+        """构建网络检索结果文本（优化：减少内容长度以加快大模型处理速度）"""
         lines = []
-        for r in results:
+        # 只取前 2 条结果，减少 prompt 长度
+        for r in results[:2]:
             title = r.get("title", "")
             content = r.get("content", "")
-            # 截断内容长度(省 token)
-            if len(content) > 500:
-                content = content[:500]
+            # 截断内容长度(省 token) - 从 500 减少到 300
+            if len(content) > 300:
+                content = content[:300] + "..."
             lines.append(f"- {title}: {content}")
         return "\n".join(lines)
 

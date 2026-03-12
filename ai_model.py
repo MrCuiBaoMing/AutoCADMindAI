@@ -311,6 +311,16 @@ class LMStudioModel(AIModel):
         if not self.endpoint:
             self.endpoint = "http://localhost:1234/v1"
 
+        # 创建可复用的 Session，减少连接建立时间
+        self._session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=1,
+            pool_maxsize=5,
+            max_retries=0
+        )
+        self._session.mount('https://', adapter)
+        self._session.mount('http://', adapter)
+
     def set_tools(self, tools: List[Dict]):
         """设置工具清单（用于 Function Calling）"""
         self.tools = tools
@@ -533,6 +543,8 @@ class LMStudioModel(AIModel):
         """
         使用自定义 prompt 和上下文生成回答（用于 Web 搜索等场景）
         注意：此方法不使用 JSON 格式的系统 prompt，而是直接发送文本 prompt
+        
+        优化：使用类级别 Session 复用连接，减少网络延迟
         """
         if not self.endpoint:
             return "错误: 未设置模型端点"
@@ -540,7 +552,8 @@ class LMStudioModel(AIModel):
         api_url = f"{self.endpoint.rstrip('/')}/chat/completions"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {self.api_key}",
+            "Connection": "keep-alive"
         }
 
         # 使用简单的系统 prompt，不要求 JSON 格式
@@ -551,18 +564,30 @@ class LMStudioModel(AIModel):
             {"role": "user", "content": prompt}
         ]
 
+        # 优化：减少 max_tokens 以加快响应速度
         data = {
             "model": self.model_name or "qwen2.5-0.5b-instruct",
             "messages": messages,
             "temperature": 0.3,
-            "max_tokens": 500
+            "max_tokens": 200,  # 进一步减少到 200，加快生成速度
+            "top_p": 0.9,
+            "frequency_penalty": 0,
+            "presence_penalty": 0
         }
 
         try:
             timeout = self._get_timeout()
-            response = requests.post(api_url, headers=headers, json=data, timeout=timeout)
+            
+            print(f"[LMStudioModel] 开始生成回答，timeout={timeout}s...")
+            start_time = __import__('time').time()
+            
+            # 使用类级别的 Session 复用连接
+            response = self._session.post(api_url, headers=headers, json=data, timeout=timeout)
             response.raise_for_status()
             result = response.json()
+            
+            elapsed = __import__('time').time() - start_time
+            print(f"[LMStudioModel] 生成完成，耗时: {elapsed:.2f}s")
 
             # 直接提取文本内容
             if "choices" in result and result["choices"]:
@@ -585,7 +610,8 @@ class LMStudioModel(AIModel):
         url, headers, body = params
         timeout = self._get_timeout()
         try:
-            response = requests.post(url, headers=headers, data=body, timeout=timeout)
+            # 使用类级别的 Session 复用连接
+            response = self._session.post(url, headers=headers, data=body, timeout=timeout)
             response.raise_for_status()
             return self.parse_response(response.content)
         except requests.exceptions.Timeout:
