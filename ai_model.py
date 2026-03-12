@@ -68,6 +68,47 @@ class AIModel:
         """处理命令（同步，可能阻塞）"""
         raise NotImplementedError
 
+    def generate_with_context(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """
+        使用自定义 prompt 和上下文生成回答
+
+        Args:
+            prompt: 自定义提示词
+            context: 上下文信息(如 web_search_results)
+
+        Returns:
+            生成的回答文本
+        """
+        # 默认实现: 拼接 prompt + context,复用 process_command
+        full_prompt = self._compose_prompt(prompt, context)
+        result = self.process_command(full_prompt, context)
+        return result.get("response", "") if isinstance(result, dict) else str(result)
+
+    def _compose_prompt(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """
+        组合 prompt 和上下文
+
+        Args:
+            prompt: 基础 prompt
+            context: 上下文信息
+
+        Returns:
+            组合后的完整 prompt
+        """
+        if not context:
+            return prompt
+
+        # 如果有 web_search_results,将其注入到 prompt 中
+        web_results = context.get("web_search_results")
+        if web_results:
+            web_content = "\n".join([
+                f"- {r.get('title', '')}: {r.get('content', '')[:300]}"
+                for r in web_results[:3]
+            ])
+            return f"{prompt}\n\n参考信息:\n{web_content}"
+
+        return prompt
+
     def get_request_params(self, command: str, context: Optional[Dict[str, Any]] = None, history: Optional[list] = None) -> Optional[Tuple[str, Dict[str, str], bytes]]:
         """返回 (url, headers, body) 用于异步请求；history 为多轮对话历史 [{"role":"user"|"assistant","content":"..."}]"""
         return None
@@ -138,7 +179,7 @@ class OpenAIModel(AIModel):
             return {"response": "错误: 未设置OpenAI API密钥", "commands": []}
         try:
             url, headers, body = self.get_request_params(command, context)
-            response = requests.post(url, headers=headers, data=body, timeout=30)
+            response = requests.post(url, headers=headers, data=body, timeout=120)
             response.raise_for_status()
             return self.parse_response(response.content)
         except Exception as e:
@@ -251,7 +292,7 @@ class AzureOpenAIModel(AIModel):
             return {"response": "错误: 未设置Azure OpenAI API密钥或端点", "commands": []}
         url, headers, body = params
         try:
-            response = requests.post(url, headers=headers, data=body, timeout=30)
+            response = requests.post(url, headers=headers, data=body, timeout=120)
             response.raise_for_status()
             return self.parse_response(response.content)
         except Exception as e:
@@ -390,6 +431,12 @@ class LMStudioModel(AIModel):
         if tools_to_use:
             data["tools"] = tools_to_use
 
+        # 调试日志
+        print(f"[LMStudioModel] API URL: {api_url}")
+        print(f"[LMStudioModel] 模型: {self.model_name}")
+        print(f"[LMStudioModel] 消息数: {len(messages)}")
+        print(f"[LMStudioModel] 请求数据: {json.dumps(data, ensure_ascii=False, indent=2)}")
+
         return api_url, headers, json.dumps(data, ensure_ascii=False).encode("utf-8")
 
     def parse_response(self, data: bytes) -> Dict[str, Any]:
@@ -469,6 +516,64 @@ class LMStudioModel(AIModel):
         except Exception as e:
             return {"response": f"处理失败: {str(e)}", "commands": []}
 
+    def _get_timeout(self) -> int:
+        """根据端点类型返回适当的超时时间（秒）"""
+        if not self.endpoint:
+            return 120
+        # NVIDIA API 首次加载模型需要较长时间（60-120秒）
+        if "nvidia.com" in self.endpoint:
+            return 180
+        # 其他云端模型也可能需要较长时间
+        if "api." in self.endpoint or "cloud" in self.endpoint:
+            return 120
+        # 本地模型响应较快
+        return 60
+
+    def generate_with_context(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """
+        使用自定义 prompt 和上下文生成回答（用于 Web 搜索等场景）
+        注意：此方法不使用 JSON 格式的系统 prompt，而是直接发送文本 prompt
+        """
+        if not self.endpoint:
+            return "错误: 未设置模型端点"
+
+        api_url = f"{self.endpoint.rstrip('/')}/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+        # 使用简单的系统 prompt，不要求 JSON 格式
+        system_prompt = "你是一个 helpful 的助手。请根据提供的信息回答用户问题。"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+
+        data = {
+            "model": self.model_name or "qwen2.5-0.5b-instruct",
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": 500
+        }
+
+        try:
+            timeout = self._get_timeout()
+            response = requests.post(api_url, headers=headers, json=data, timeout=timeout)
+            response.raise_for_status()
+            result = response.json()
+
+            # 直接提取文本内容
+            if "choices" in result and result["choices"]:
+                message = result["choices"][0].get("message", {})
+                content = message.get("content", "")
+                return content.strip()
+            return "无法获取模型响应"
+        except Exception as e:
+            print(f"[LMStudioModel] generate_with_context 失败: {e}")
+            return f"生成回答失败: {str(e)}"
+
     def process_command(self, command: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """使用LM Studio处理命令（同步）"""
         print(f"[LM Studio] 开始处理命令: {command}")
@@ -478,14 +583,15 @@ class LMStudioModel(AIModel):
         if not params:
             return {"response": "错误: 未设置LM Studio端点", "commands": []}
         url, headers, body = params
+        timeout = self._get_timeout()
         try:
-            response = requests.post(url, headers=headers, data=body, timeout=120)
+            response = requests.post(url, headers=headers, data=body, timeout=timeout)
             response.raise_for_status()
             return self.parse_response(response.content)
         except requests.exceptions.Timeout:
-            return {"response": "请求超时，请检查LM Studio是否正常运行", "commands": []}
+            return {"response": f"请求超时（{timeout}秒），请检查网络或模型状态", "commands": []}
         except requests.exceptions.ConnectionError:
-            return {"response": "无法连接到LM Studio，请确认服务已启动", "commands": []}
+            return {"response": "无法连接到模型服务，请确认服务已启动", "commands": []}
         except Exception as e:
             return {"response": f"处理失败: {str(e)}", "commands": []}
 

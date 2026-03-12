@@ -10,12 +10,35 @@ from core.intent_router import detect_intent
 from connectors.kb_sqlserver.retriever import KBRetriever
 
 
+# Web 搜索 Prompt 模板
+WEB_SEARCH_PROMPT = """你是一个智能助手。以下是从互联网上检索到的最新信息:
+
+{web_content}
+
+用户问题: {question}
+
+请基于检索结果回答:
+1. 如果信息充足且可信,给出清晰、简洁的中文回答
+2. 如果信息存在矛盾,说明不同说法
+3. 如果信息过时或不完整,请明确告知
+4. 回答中可标注信息来源(如"根据XX网...")
+5. 回答长度控制在 2-3 句话内
+
+你的回答:"""
+
+
 class Orchestrator:
-    def __init__(self, db_enabled: bool, db_connection_string: str, db_domain_code: str = ""):
+    def __init__(self, db_enabled: bool, db_connection_string: str, db_domain_code: str = "",
+                 web_retriever=None, web_cfg=None, ai_model=None):
         self.db_enabled = bool(db_enabled)
         self.db_connection_string = db_connection_string or ""
         self.db_domain_code = db_domain_code or ""
         self.kb = KBRetriever(self.db_connection_string) if self.db_enabled and self.db_connection_string else None
+
+        # Web 检索器
+        self.web_retriever = web_retriever
+        self.web_cfg = web_cfg or {}
+        self.ai_model = ai_model
 
         self.pending_source_choice: bool = False
         self.pending_source_query: str = ""
@@ -145,6 +168,63 @@ class Orchestrator:
             "commands": [],
             "citations": [],
         }
+
+    def _build_web_content(self, results: List[Dict[str, Any]]) -> str:
+        """构建网络检索结果文本"""
+        lines = []
+        for r in results:
+            title = r.get("title", "")
+            content = r.get("content", "")
+            # 截断内容长度(省 token)
+            if len(content) > 500:
+                content = content[:500]
+            lines.append(f"- {title}: {content}")
+        return "\n".join(lines)
+
+    def _generate_with_web(self, question: str, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """使用网络检索结果生成回答"""
+        if not self.ai_model:
+            return {
+                "intent": "chat",
+                "route": "web",
+                "response": "AI 模型未配置,无法融合检索结果。",
+                "commands": [],
+                "web_sources": []
+            }
+
+        try:
+            # 构建 web prompt
+            web_content = self._build_web_content(results)
+            prompt = WEB_SEARCH_PROMPT.format(
+                web_content=web_content,
+                question=question
+            )
+
+            # 调用 AI 生成回答
+            response = self.ai_model.generate_with_context(prompt, {"web_search_results": results})
+
+            # 提取来源信息(前 2 个)
+            web_sources = [{"title": r.get("title", ""), "url": r.get("url", "")} for r in results[:2]]
+
+            return {
+                "intent": "chat",
+                "route": "web",
+                "response": response,
+                "commands": [],
+                "web_sources": web_sources
+            }
+
+        except Exception as e:
+            # 降级: 直接返回检索结果摘要
+            print(f"[Orchestrator] Web 生成失败: {e}")
+            summary = "\n".join([f"{r.get('title', '')}: {r.get('content', '')[:200]}" for r in results[:2]])
+            return {
+                "intent": "chat",
+                "route": "web",
+                "response": f"已联网获取信息:\n{summary}",
+                "commands": [],
+                "web_sources": [{"title": r.get("title", ""), "url": r.get("url", "")} for r in results[:2]]
+            }
 
     def _build_kb_context_result(self, user_query: str, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         dedup = {}
@@ -446,5 +526,39 @@ class Orchestrator:
 
         if intent == "FILE_SEARCH":
             return {"intent": "chat", "route": "file", "response": "共享文件检索能力正在接入中（下一阶段）。", "commands": [], "citations": []}
+
+        # ===== 新增: Web 检索路由 =====
+        if intent == "CHAT":
+            # 检查是否需要联网检索
+            needs_web = analysis.get("needs_web", False)
+            web_enabled = self.web_cfg.get("enabled", False)
+            print(f"[Orchestrator Debug] intent={intent}, needs_web={needs_web}, web_enabled={web_enabled}")
+
+            # 触发条件: 明确需要联网 (仅当 needs_web 为 True 时才触发)
+            # 注意: 不再使用 "web_enabled and not kb_hit" 作为触发条件，
+            # 避免普通对话也触发网络搜索
+            if needs_web and web_enabled:
+                try:
+                    # 执行网络检索
+                    query = analysis.get("web_keywords") or user_text
+                    # 从 tavily 配置中读取 max_results
+                    tavily_cfg = self.web_cfg.get("tavily", {})
+                    max_results = tavily_cfg.get("max_results", 3)
+
+                    if self.web_retriever:
+                        web_results = self.web_retriever.search(query, max_results=max_results)
+
+                        if web_results:
+                            print(f"[Orchestrator] Web 检索成功: {len(web_results)} 条结果")
+                            # 生成融合回答
+                            return self._generate_with_web(user_text, web_results)
+                        else:
+                            print(f"[Orchestrator] Web 检索无结果: {query}")
+                except Exception as e:
+                    print(f"[Orchestrator] Web 检索失败: {e}")
+                    # 降级到本地回答
+
+            # 不需要联网或检索失败 → 返回空,由后续流程处理
+            pass
 
         return {"intent": "command_proxy", "route": "chat", "response": "", "commands": [], "citations": []}

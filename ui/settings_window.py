@@ -66,6 +66,7 @@ class SettingsWindow(QDialog):
         self.loaded_autocad_config = {}
         self.loaded_general_config = {}
         self.loaded_db_config = {}
+        self.loaded_web_search_config = {}
 
         # 当前选中的模型索引
         self.current_model_index = -1
@@ -98,6 +99,10 @@ class SettingsWindow(QDialog):
         # 数据库配置标签页
         db_tab = self.create_db_tab()
         tab_widget.addTab(db_tab, "数据库配置")
+
+        # 网络搜索配置标签页
+        web_search_tab = self.create_web_search_tab()
+        tab_widget.addTab(web_search_tab, "网络搜索")
 
         # 通用设置标签页
         general_tab = self.create_general_tab()
@@ -346,39 +351,124 @@ class SettingsWindow(QDialog):
 
         return widget
 
+    def create_web_search_tab(self):
+        """创建网络搜索配置标签页"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
+
+        # 启用/禁用网络搜索
+        enable_group = QGroupBox("网络搜索功能")
+        enable_layout = QVBoxLayout()
+
+        self.web_search_enable_check = QCheckBox("启用网络搜索功能")
+        self.web_search_enable_check.setToolTip("启用后，AI 可以在需要时搜索互联网获取最新信息")
+        enable_layout.addWidget(self.web_search_enable_check)
+
+        enable_group.setLayout(enable_layout)
+        layout.addWidget(enable_group)
+
+        # Tavily 配置
+        tavily_group = QGroupBox("Tavily 搜索配置")
+        tavily_form = QFormLayout()
+        tavily_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        tavily_form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        tavily_form.setHorizontalSpacing(14)
+        tavily_form.setVerticalSpacing(12)
+
+        self.tavily_api_key_edit = QLineEdit()
+        self.tavily_api_key_edit.setPlaceholderText("请输入 Tavily API Key")
+        self.tavily_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.tavily_api_key_edit.setToolTip("Tavily API Key，用于执行网络搜索。可在 https://tavily.com 获取")
+
+        self.tavily_max_results_spin = QSpinBox()
+        self.tavily_max_results_spin.setRange(1, 10)
+        self.tavily_max_results_spin.setValue(3)
+        self.tavily_max_results_spin.setToolTip("每次搜索返回的最大结果数")
+
+        tavily_form.addRow("API Key:", self.tavily_api_key_edit)
+        tavily_form.addRow("最大结果数:", self.tavily_max_results_spin)
+
+        tavily_group.setLayout(tavily_form)
+        layout.addWidget(tavily_group)
+
+        # 缓存配置
+        cache_group = QGroupBox("缓存配置")
+        cache_form = QFormLayout()
+        cache_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        cache_form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        cache_form.setHorizontalSpacing(14)
+        cache_form.setVerticalSpacing(12)
+
+        self.web_search_cache_enable_check = QCheckBox("启用缓存")
+        self.web_search_cache_enable_check.setChecked(True)
+        self.web_search_cache_enable_check.setToolTip("启用缓存可以减少重复搜索，提高响应速度")
+
+        self.web_search_cache_ttl_spin = QSpinBox()
+        self.web_search_cache_ttl_spin.setRange(60, 3600)
+        self.web_search_cache_ttl_spin.setValue(300)
+        self.web_search_cache_ttl_spin.setSuffix(" 秒")
+        self.web_search_cache_ttl_spin.setToolTip("缓存有效期，超过此时间将重新搜索")
+
+        self.web_search_cache_size_spin = QSpinBox()
+        self.web_search_cache_size_spin.setRange(50, 1000)
+        self.web_search_cache_size_spin.setValue(200)
+        self.web_search_cache_size_spin.setSuffix(" 条")
+        self.web_search_cache_size_spin.setToolTip("最大缓存条目数")
+
+        cache_form.addRow("启用缓存:", self.web_search_cache_enable_check)
+        cache_form.addRow("缓存有效期:", self.web_search_cache_ttl_spin)
+        cache_form.addRow("最大缓存数:", self.web_search_cache_size_spin)
+
+        cache_group.setLayout(cache_form)
+        layout.addWidget(cache_group)
+
+        # 说明文字
+        info_label = QLabel(
+            "💡 提示：网络搜索功能需要 Tavily API Key。"
+            "您可以在 https://tavily.com 免费注册获取 API Key。"
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #666; margin-top: 10px;")
+        layout.addWidget(info_label)
+
+        layout.addStretch()
+        return widget
+
     def create_general_tab(self):
         """创建通用设置标签页"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(12)
-        
+
         group = QGroupBox("通用设置")
         form_layout = QFormLayout()
         form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         form_layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
         form_layout.setHorizontalSpacing(14)
         form_layout.setVerticalSpacing(12)
-        
+
         self.language_combo = QComboBox()
         self.language_combo.addItems(["简体中文", "English"])
-        
+
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["默认", "深色", "浅色"])
         self.theme_combo.setToolTip("主题将在保存后应用到主界面")
-        
+
         self.history_limit_spin = QSpinBox()
         self.history_limit_spin.setRange(10, 1000)
         self.history_limit_spin.setValue(100)
-        
+
         form_layout.addRow("语言:", self.language_combo)
         form_layout.addRow("主题:", self.theme_combo)
         form_layout.addRow("历史记录限制:", self.history_limit_spin)
-        
+
         group.setLayout(form_layout)
         layout.addWidget(group)
         layout.addStretch()
-        
+
         return widget
     
     def populate_model_list(self):
@@ -514,6 +604,20 @@ class SettingsWindow(QDialog):
                 "connection_string": self.db_connection_string_edit.text().strip(),
                 "config_key": self.db_config_key_edit.text().strip() or "app/global"
             },
+            "web_search": {
+                "enabled": self.web_search_enable_check.isChecked(),
+                "engines": ["tavily"] if self.web_search_enable_check.isChecked() else [],
+                "tavily": {
+                    "api_key": self.tavily_api_key_edit.text().strip(),
+                    "max_results": self.tavily_max_results_spin.value(),
+                    "include_answer": True
+                },
+                "cache": {
+                    "enabled": self.web_search_cache_enable_check.isChecked(),
+                    "ttl_seconds": self.web_search_cache_ttl_spin.value(),
+                    "max_size": self.web_search_cache_size_spin.value()
+                }
+            },
             "general": {
                 "language": self.language_combo.currentText(),
                 "theme": self.theme_combo.currentText(),
@@ -565,6 +669,9 @@ class SettingsWindow(QDialog):
                 # 加载通用配置
                 self.loaded_general_config = config.get("general", {})
 
+                # 加载网络搜索配置
+                self.loaded_web_search_config = config.get("web_search", {})
+
             except Exception as e:
                 print(f"加载配置失败: {e}")
 
@@ -602,6 +709,19 @@ class SettingsWindow(QDialog):
             self.theme_combo.setCurrentIndex(theme_index)
 
         self.history_limit_spin.setValue(history_limit)
+
+        # 回填网络搜索配置
+        web = self.loaded_web_search_config or {}
+        self.web_search_enable_check.setChecked(bool(web.get("enabled", False)))
+
+        tavily = web.get("tavily", {}) if isinstance(web, dict) else {}
+        self.tavily_api_key_edit.setText(tavily.get("api_key", "") or "")
+        self.tavily_max_results_spin.setValue(_safe_int(tavily.get("max_results", 3), 3))
+
+        cache = web.get("cache", {}) if isinstance(web, dict) else {}
+        self.web_search_cache_enable_check.setChecked(bool(cache.get("enabled", True)))
+        self.web_search_cache_ttl_spin.setValue(_safe_int(cache.get("ttl_seconds", 300), 300))
+        self.web_search_cache_size_spin.setValue(_safe_int(cache.get("max_size", 200), 200))
     
     def get_selected_model(self):
         """获取当前选中的模型"""

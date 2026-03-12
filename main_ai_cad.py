@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QByteArray, QUrl
 from PyQt6.QtGui import QTextCursor, QColor, QAction
-from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply, QSslConfiguration, QSslSocket
 
 from autocad_controller import AutoCADController
 from config_manager import ConfigManager
@@ -31,6 +31,8 @@ from ipc_bridge import AICADBridgeServer
 from core.config_db_store import ConfigDBStore
 from core.orchestrator import Orchestrator
 from core.ai_intent_analyzer import AIIntentAnalyzer
+from core.answer_cache import AnswerCache
+from connectors.web_retriever import WebRetriever
 
 class StatusIndicator(QWidget):
     """状态指示器控件"""
@@ -113,6 +115,10 @@ class AICADPlugin(QMainWindow):
         self._ignore_ai_result = False  # 停止后丢弃本轮（延迟返回）的AI结果，直到下一次发送
         self._current_reply = None  # 当前异步 HTTP 请求，用于中止
         self._network_manager = QNetworkAccessManager(self)
+        # 配置 SSL (支持 HTTPS)
+        ssl_config = QSslConfiguration.defaultConfiguration()
+        ssl_config.setPeerVerifyMode(QSslSocket.PeerVerifyMode.VerifyNone)
+        QSslConfiguration.setDefaultConfiguration(ssl_config)
         # CAD 命令队列：用 QTimer 间隔执行，避免主线程长时间阻塞，便于点击停止
         self._cad_command_queue = []
         self._cad_timer = QTimer(self)
@@ -247,7 +253,7 @@ class AICADPlugin(QMainWindow):
         try:
             # 加载配置的模型
             self.load_models()
-            
+
             # 初始化当前选中的模型
             if self.models and len(self.models) > 0:
                 self.current_model_config = self.models[0]
@@ -257,13 +263,77 @@ class AICADPlugin(QMainWindow):
                     endpoint=self.current_model_config.endpoint,
                     deployment=self.current_model_config.model_name
                 )
-                self.update_status_bar(f"AI模型初始化完成: {self.current_model_config.name}")
+                model_name = self.current_model_config.name
+                self.update_status_bar(f"AI模型初始化完成: {model_name}")
+
+                # 如果是 NVIDIA 模型，添加提示
+                is_nvidia = self.current_model_config.endpoint and "nvidia.com" in self.current_model_config.endpoint
+                if is_nvidia:
+                    self.add_chat_message("系统", f"✅ 已加载 NVIDIA 模型: {model_name}\n⏱️ 首次使用可能需要 1-2 分钟加载时间，请耐心等待。")
             else:
                 self.ai_model = get_ai_model("local")
                 self.update_status_bar("使用本地模型（未配置其他模型）")
+
+            # 初始化 Web 检索器
+            self._init_web_retriever()
+
+            # 初始化答案缓存
+            self._init_answer_cache()
+
+            # 重建编排器(需要 ai_model 和 web_retriever)
+            self._orchestrator = None
+
         except Exception as e:
             self.ai_model = get_ai_model("local")
             self.update_status_bar(f"AI模型初始化失败，使用本地模型: {str(e)}")
+
+    def _init_web_retriever(self):
+        """初始化 Web 检索器"""
+        try:
+            import json
+            import os
+            config_file = os.path.join(os.path.dirname(__file__), "ai_config.json")
+            web_cfg = {}
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                web_cfg = config.get("web_search", {}) if isinstance(config, dict) else {}
+
+            if web_cfg.get("enabled", False):
+                self.web_retriever = WebRetriever(web_cfg)
+                self.add_chat_message("系统", "🌐 网络检索功能已启用")
+            else:
+                self.web_retriever = None
+                print("[System] Web 检索功能未启用")
+        except Exception as e:
+            self.web_retriever = None
+            print(f"[System] Web 检索器初始化失败: {e}")
+
+    def _init_answer_cache(self):
+        """初始化答案缓存"""
+        try:
+            import json
+            import os
+            config_file = os.path.join(os.path.dirname(__file__), "ai_config.json")
+            web_cfg = {}
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                web_cfg = config.get("web_search", {}) if isinstance(config, dict) else {}
+
+            cache_cfg = web_cfg.get("cache", {})
+            if cache_cfg.get("enabled", True):
+                self.answer_cache = AnswerCache(
+                    max_size=cache_cfg.get("max_size", 200),
+                    ttl_seconds=cache_cfg.get("ttl_seconds", 300)
+                )
+                print(f"[System] 答案缓存已启用: max={cache_cfg.get('max_size', 200)}, ttl={cache_cfg.get('ttl_seconds', 300)}s")
+            else:
+                self.answer_cache = None
+                print("[System] 答案缓存未启用")
+        except Exception as e:
+            self.answer_cache = None
+            print(f"[System] 答案缓存初始化失败: {e}")
     
     def load_models(self):
         """加载配置的模型（优先数据库，其次本地文件）"""
@@ -324,7 +394,7 @@ class AICADPlugin(QMainWindow):
         """模型切换事件"""
         if index >= 0 and index < len(self.models):
             self.current_model_config = self.models[index]
-            
+
             try:
                 self.ai_model = get_ai_model(
                     self.current_model_config.model_type,
@@ -332,8 +402,16 @@ class AICADPlugin(QMainWindow):
                     endpoint=self.current_model_config.endpoint,
                     deployment=self.current_model_config.model_name
                 )
-                self.update_status_bar(f"已切换到模型: {self.current_model_config.name}")
-                self.add_chat_message("系统", f"已切换到模型: {self.current_model_config.name}")
+                model_name = self.current_model_config.name
+                self.update_status_bar(f"已切换到模型: {model_name}")
+
+                # NVIDIA 模型特殊提示
+                is_nvidia = self.current_model_config.endpoint and "nvidia.com" in self.current_model_config.endpoint
+                hint = ""
+                if is_nvidia:
+                    hint = "\n⏱️ 注意：首次使用 NVIDIA 模型可能需要 1-2 分钟加载时间，请耐心等待。"
+
+                self.add_chat_message("系统", f"已切换到模型: {model_name}{hint}")
             except Exception as e:
                 self.update_status_bar(f"模型切换失败: {str(e)}")
                 self.add_chat_message("系统", f"模型切换失败: {str(e)}")
@@ -883,7 +961,7 @@ class AICADPlugin(QMainWindow):
             self.ai_thread.stop()
             self.ai_thread.wait(1000)
 
-        # 2. 仅当“当前确有CAD命令执行”时才发送取消，避免对纯对话误发控制指令
+        # 2. 仅当"当前确有CAD命令执行"时才发送取消，避免对纯对话误发控制指令
         cancelled = True
         should_cancel_cad = self._cad_execution_active or (self._cad_worker is not None and self._cad_worker.isRunning())
         if should_cancel_cad:
@@ -935,8 +1013,21 @@ class AICADPlugin(QMainWindow):
     def process_with_ai(self, command, request_id=None):
         """使用AI处理命令（异步网络请求，不阻塞界面）"""
         try:
-            # 每次新请求前重置“用户已停止”标记，避免上次点停止导致本次响应被丢弃
+            # 每次新请求前重置"用户已停止"标记，避免上次点停止导致本次响应被丢弃
             self._user_requested_stop = False
+
+            # ===== 答案缓存检查 =====
+            if self.answer_cache:
+                cached_response = self.answer_cache.get(command, "chat")
+                if cached_response:
+                    print(f"[System] 缓存命中: {command}")
+                    self.on_ai_result({
+                        "intent": "chat",
+                        "response": cached_response,
+                        "commands": [],
+                        "request_id": int(request_id or self._active_request_id),
+                    })
+                    return
 
             self.is_processing = True
             self.set_send_button_state(True)
@@ -947,7 +1038,7 @@ class AICADPlugin(QMainWindow):
             self.add_chat_message("系统", "⏳ 正在处理您的请求...")
 
             self._pending_user_message = command  # 用于收到回复后只追加 assistant 到历史
-            # 发送时就把用户消息写入历史，这样即使用户点停止，下一轮“请继续”仍有上下文
+            # 发送时就把用户消息写入历史，这样即使用户点停止，下一轮"请继续"仍有上下文
             self._chat_history.append({"role": "user", "content": command})
             if len(self._chat_history) > self._chat_history_max:
                 self._chat_history = self._chat_history[-self._chat_history_max:]
@@ -955,20 +1046,44 @@ class AICADPlugin(QMainWindow):
             # 主流程编排（Phase 2 起步）：优先处理 KB_QA，CAD 命令继续走既有模型链路
             cfg = self._load_runtime_config()
             db_cfg = cfg.get("database", {}) if isinstance(cfg, dict) else {}
+            web_cfg = cfg.get("web_search", {}) if isinstance(cfg, dict) else {}
             if self._orchestrator is None:
                 self._orchestrator = Orchestrator(
                     db_enabled=bool(db_cfg.get("enabled", False)),
                     db_connection_string=(db_cfg.get("connection_string") or "").strip(),
                     db_domain_code=(db_cfg.get("domain_code") or "").strip(),
+                    web_retriever=self.web_retriever,
+                    web_cfg=web_cfg,
+                    ai_model=self.ai_model
                 )
             analyzer = AIIntentAnalyzer(self.ai_model)
             analysis = analyzer.analyze(command, {
                 "last_kb_query": getattr(self._orchestrator, "last_kb_query", ""),
                 "last_kb_doc_title": getattr(self._orchestrator, "last_kb_doc_title", ""),
             })
+            print(f"[Debug] Analysis: {analysis}")
             orchestration_result = self._orchestrator.handle(command, analysis)
             if isinstance(orchestration_result, dict):
                 route = orchestration_result.get("route")
+                # ===== Web 检索路由 =====
+                if route == "web":
+                    web_sources = orchestration_result.get("web_sources", [])
+                    response_text = orchestration_result.get("response", "")
+                    if web_sources:
+                        source_lines = []
+                        for ws in web_sources:
+                            source_lines.append(f"- [{ws.get('title', '')}]({ws.get('url', '')})")
+                        response_text += "\n\n来源：\n" + "\n".join(source_lines)
+                    self.on_ai_result(
+                        {
+                            "intent": "chat",
+                            "response": response_text or "已联网获取信息，但未生成可展示回答。",
+                            "commands": [],
+                            "request_id": int(request_id or self._active_request_id),
+                        }
+                    )
+                    return
+
                 if orchestration_result.get("intent") != "command_proxy" and route == "kb":
                     # 需要用户澄清/补充时，直接使用编排器文本
                     self.on_ai_result(
@@ -1017,8 +1132,19 @@ class AICADPlugin(QMainWindow):
                 if req is not None:
                     url, headers, body = req
                     request = QNetworkRequest(QUrl(url))
+                    # 应用 SSL 配置
+                    ssl_config = QSslConfiguration.defaultConfiguration()
+                    request.setSslConfiguration(ssl_config)
                     for k, v in (headers or {}).items():
                         request.setRawHeader(k.encode("utf-8"), v.encode("utf-8"))
+                    # 根据端点类型动态设置超时时间
+                    timeout_ms = 120000  # 默认 120 秒
+                    if "nvidia.com" in url:
+                        timeout_ms = 180000  # NVIDIA API 180 秒
+                    elif "localhost" in url or "127.0.0.1" in url:
+                        timeout_ms = 60000  # 本地模型 60 秒
+                    print(f"[Network] 设置超时: {timeout_ms}ms, URL: {url}")
+                    request.setTransferTimeout(timeout_ms)
                     self._current_reply = self._network_manager.post(request, QByteArray(body))
                     self._current_reply.setProperty("request_id", int(request_id or self._active_request_id))
                     self._current_reply.finished.connect(self._on_ai_network_finished)
@@ -1052,14 +1178,20 @@ class AICADPlugin(QMainWindow):
                 return
             if reply.error() != QNetworkReply.NetworkError.NoError:
                 err_msg = reply.errorString() or "网络错误"
-                self.on_ai_result({"response": err_msg, "commands": [], "request_id": request_id})
+                http_status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+                print(f"[Network Error] Status: {http_status}, Error: {err_msg}")
+                self.on_ai_result({"response": f"网络错误({http_status}): {err_msg}", "commands": [], "request_id": request_id})
                 return
             data = reply.readAll().data()
+            print(f"[Network Response] Length: {len(data)} bytes")
             result = self.ai_model.parse_response(data)
             if isinstance(result, dict):
                 result["request_id"] = request_id
             self.on_ai_result(result)
         except Exception as e:
+            print(f"[Network Exception] {str(e)}")
+            import traceback
+            traceback.print_exc()
             if not self._user_requested_stop:
                 self.on_ai_result({"response": f"处理响应失败: {str(e)}", "commands": [], "request_id": self._active_request_id})
     
@@ -1079,7 +1211,7 @@ class AICADPlugin(QMainWindow):
         # 数据库状态不随CAD重置，启动后保持当前检测结果
 
     def _is_operation_intent(self, text: str) -> bool:
-        """判断用户输入是否包含“执行CAD操作”意图。"""
+        """判断用户输入是否包含"执行CAD操作"意图。"""
         t = (text or "").strip().lower()
         if not t:
             return False
@@ -1108,7 +1240,7 @@ class AICADPlugin(QMainWindow):
         if not text:
             return ""
 
-        # 优先提取“最终回答”段
+        # 优先提取"最终回答"段
         for marker in ["【最终回答】", "最终回答：", "最终回答:"]:
             if marker in text:
                 return text.split(marker)[-1].strip()
@@ -1206,6 +1338,12 @@ class AICADPlugin(QMainWindow):
                     return
 
             response_text = self.clean_ai_response(response_text)
+
+            # ===== 写入答案缓存 =====
+            if self.answer_cache and intent == "chat":
+                user_input = self._pending_user_message or ""
+                if user_input:
+                    self.answer_cache.set(user_input, intent, response_text)
 
             self.add_chat_message("AI", response_text)
             self._bridge_last_ai_seq += 1
@@ -1315,7 +1453,7 @@ class AICADPlugin(QMainWindow):
                 # 记录命令历史
                 self.add_history_command(command, result)
 
-                # 仅在有实质内容时显示（不刷“命令执行结果: True”）
+                # 仅在有实质内容时显示（不刷"命令执行结果: True"）
                 if result is not None and result is not True and result is not False:
                     self.add_chat_message("系统", f"命令执行结果: {result}")
 
