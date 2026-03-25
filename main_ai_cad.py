@@ -155,9 +155,9 @@ class AICADPlugin(QMainWindow):
         # 先启动桥接服务（优先保证 AutoCAD AIMIND 可快速探活成功）
         try:
             self.bridge.start()
-            self.add_chat_message("系统", "🔌 本地桥接服务已启动: http://127.0.0.1:8765")
+            self.add_chat_message("系统", "[网络] 本地桥接服务已启动: http://127.0.0.1:8765")
         except Exception as e:
-            self.add_chat_message("系统", f"⚠ 桥接服务启动失败: {str(e)}")
+            self.add_chat_message("系统", f"[警告] 桥接服务启动失败: {str(e)}")
 
         # 延后执行可能较慢的初始化，确保 bridge 可被 AIMIND 快速探活
         self.ai_model = None
@@ -234,11 +234,11 @@ class AICADPlugin(QMainWindow):
                     version = self.acad.acad_app.Version if self.acad.acad_app else "未知版本"
                     self.status_indicator.set_status("connected")
                     self.status_label.setText(f"已连接 {version}")
-                    self.update_status_bar(f"✓ 已连接到AutoCAD {version}")
+                    self.update_status_bar(f"[OK] 已连接到AutoCAD {version}")
                 except:
                     self.status_indicator.set_status("connected")
                     self.status_label.setText("已连接")
-                    self.update_status_bar("✓ 已连接到AutoCAD")
+                    self.update_status_bar("[OK] 已连接到AutoCAD")
             else:
                 self.status_indicator.set_status("disconnected")
                 self.status_label.setText("未连接")
@@ -269,7 +269,7 @@ class AICADPlugin(QMainWindow):
                 # 如果是 NVIDIA 模型，添加提示
                 is_nvidia = self.current_model_config.endpoint and "nvidia.com" in self.current_model_config.endpoint
                 if is_nvidia:
-                    self.add_chat_message("系统", f"✅ 已加载 NVIDIA 模型: {model_name}\n⏱️ 首次使用可能需要 1-2 分钟加载时间，请耐心等待。")
+                    self.add_chat_message("系统", f"[OK] 已加载 NVIDIA 模型: {model_name}\n[注意] 首次使用可能需要 1-2 分钟加载时间，请耐心等待。")
             else:
                 self.ai_model = get_ai_model("local")
                 self.update_status_bar("使用本地模型（未配置其他模型）")
@@ -301,7 +301,7 @@ class AICADPlugin(QMainWindow):
 
             if web_cfg.get("enabled", False):
                 self.web_retriever = WebRetriever(web_cfg)
-                self.add_chat_message("系统", "🌐 网络检索功能已启用")
+                self.add_chat_message("系统", "[网络] 网络检索功能已启用")
             else:
                 self.web_retriever = None
                 print("[System] Web 检索功能未启用")
@@ -664,7 +664,7 @@ class AICADPlugin(QMainWindow):
         return ""
 
     def _load_runtime_config(self):
-        """读取运行时配置：优先本地配置；若启用 DB 则尝试覆盖为 DB 启用配置。"""
+        """读取运行时配置：优先本地配置；若启用 DB 则尝试合并 DB 配置（DB 配置覆盖本地，但不删除本地特有配置）。"""
         cfg = {}
         try:
             config_file = os.path.join(os.path.dirname(__file__), "ai_config.json")
@@ -674,16 +674,30 @@ class AICADPlugin(QMainWindow):
         except Exception:
             cfg = {}
 
+        if not isinstance(cfg, dict):
+            cfg = {}
+
         try:
-            db_cfg = cfg.get("database", {}) if isinstance(cfg, dict) else {}
-            if db_cfg.get("enabled"):
-                conn_str = (db_cfg.get("connection_string") or "").strip()
-                config_key = (db_cfg.get("config_key") or "app/global").strip()
+            db_cfg_local = cfg.get("database", {}) if isinstance(cfg, dict) else {}
+            if db_cfg_local.get("enabled"):
+                conn_str = (db_cfg_local.get("connection_string") or "").strip()
+                config_key = (db_cfg_local.get("config_key") or "app/global").strip()
                 if conn_str:
                     store = ConfigDBStore(conn_str)
                     active = store.get_active_config(config_key)
                     if active and isinstance(active.get("config_json"), dict):
-                        return active.get("config_json")
+                        db_config = active.get("config_json")
+                        # 合并策略：DB 配置覆盖本地，但保留本地特有的配置项（如 web_search）
+                        merged = cfg.copy()
+                        merged.update(db_config)
+                        # 特殊处理嵌套字典：对于 web_search 等嵌套配置，如果 DB 没有则保留本地
+                        for key in cfg:
+                            if key not in db_config:
+                                merged[key] = cfg[key]
+                            elif isinstance(cfg[key], dict) and isinstance(db_config.get(key), dict):
+                                # 合并嵌套字典
+                                merged[key] = {**cfg[key], **db_config[key]}
+                        return merged
         except Exception:
             pass
 
@@ -972,12 +986,12 @@ class AICADPlugin(QMainWindow):
                 cancelled = self.acad.force_cancel_command(rounds=4, interval=0.06) or cancelled
 
             if not cancelled:
-                self.add_chat_message("系统", "⚠ 未确认CAD已响应取消，建议手动按一次 ESC")
+                self.add_chat_message("系统", "[警告] 未确认CAD已响应取消，建议手动按一次 ESC")
         # 3. 统一收尾
         self._cad_finish(was_stopped=True)
         self.is_processing = False
         self.set_send_button_state(False)
-        self.add_chat_message("系统", "✓ 已停止（已请求取消CAD当前命令）")
+        self.add_chat_message("系统", "[OK] 已停止（已请求取消CAD当前命令）")
         self.reset_status()
     
     def set_send_button_state(self, is_processing: bool):
@@ -1017,7 +1031,11 @@ class AICADPlugin(QMainWindow):
             self._user_requested_stop = False
 
             # ===== 答案缓存检查 =====
-            if self.answer_cache:
+            # 注意：对于需要实时信息的查询（时间/天气/新闻等），跳过缓存
+            realtime_keywords = ["今天", "明天", "昨天", "天气", "气温", "温度", "新闻", "最新", "实时", "当前", "现在", "总统", "股价", "汇率"]
+            needs_realtime = any(kw in command for kw in realtime_keywords)
+            
+            if self.answer_cache and not needs_realtime:
                 cached_response = self.answer_cache.get(command, "chat")
                 if cached_response:
                     print(f"[System] 缓存命中: {command}")
@@ -1028,14 +1046,16 @@ class AICADPlugin(QMainWindow):
                         "request_id": int(request_id or self._active_request_id),
                     })
                     return
+            elif needs_realtime:
+                print(f"[System] 实时信息查询，跳过缓存: {command}")
 
             self.is_processing = True
             self.set_send_button_state(True)
 
             self.status_indicator.set_status("processing")
             self.status_label.setText("AI处理中...")
-            self.update_status_bar("⏳ AI正在思考，请稍候...")
-            self.add_chat_message("系统", "⏳ 正在处理您的请求...")
+            self.update_status_bar("AI正在思考，请稍候...")
+            self.add_chat_message("系统", "正在处理您的请求...")
 
             self._pending_user_message = command  # 用于收到回复后只追加 assistant 到历史
             # 发送时就把用户消息写入历史，这样即使用户点停止，下一轮"请继续"仍有上下文
@@ -1159,8 +1179,8 @@ class AICADPlugin(QMainWindow):
         except Exception as e:
             self.is_processing = False
             self.set_send_button_state(False)
-            self.add_chat_message("系统", f"❌ 处理失败: {str(e)}")
-            self.update_status_bar("❌ 处理失败")
+            self.add_chat_message("系统", f"[错误] 处理失败: {str(e)}")
+            self.update_status_bar("[错误] 处理失败")
             self.reset_status()
 
     def _on_ai_network_finished(self):
@@ -1329,12 +1349,12 @@ class AICADPlugin(QMainWindow):
 
                     # 把工具结果转为文本返回给用户
                     if tool_result.get("success"):
-                        self.add_chat_message("AI", f"✅ {tool_result.get('message', '执行成功')}")
+                        self.add_chat_message("AI", f"[OK] {tool_result.get('message', '执行成功')}")
                     else:
-                        self.add_chat_message("AI", f"❌ {tool_result.get('error', '执行失败')}")
+                        self.add_chat_message("AI", f"[错误] {tool_result.get('error', '执行失败')}")
 
                     # 工具执行完成，恢复状态
-                    self.update_status_bar("✓ 工具执行完成")
+                    self.update_status_bar("[OK] 工具执行完成")
                     return
 
             response_text = self.clean_ai_response(response_text)
@@ -1373,10 +1393,10 @@ class AICADPlugin(QMainWindow):
             if commands and intent != 'command':
                 self.add_chat_message("系统", "💬 大模型判定为对话，已阻止命令执行")
 
-            self.update_status_bar("✓ 处理完成")
+            self.update_status_bar("[OK] 处理完成")
         except Exception as e:
-            self.add_chat_message("系统", f"❌ 处理AI结果时出错: {str(e)}")
-            self.update_status_bar("❌ 处理出错")
+            self.add_chat_message("系统", f"[错误] 处理AI结果时出错: {str(e)}")
+            self.update_status_bar("[错误] 处理出错")
         finally:
             intent = result.get('intent', 'chat') if isinstance(result, dict) else 'chat'
             if (not commands) or (intent != 'command'):
@@ -1410,7 +1430,7 @@ class AICADPlugin(QMainWindow):
         if was_stopped is None:
             was_stopped = self._user_requested_stop
         if self.is_processing and not was_stopped:
-            self.add_chat_message("系统", "✓ 命令执行完成")
+            self.add_chat_message("系统", "[OK] 命令执行完成")
         self._cad_command_queue.clear()
         self._cad_timer.stop()
         self._cad_worker = None
@@ -1420,7 +1440,7 @@ class AICADPlugin(QMainWindow):
         self.set_send_button_state(False)
         self.reset_status()
         if not was_stopped:
-            self.update_status_bar("✓ 处理完成")
+            self.update_status_bar("[OK] 处理完成")
     
     def execute_direct_command(self, command):
         """执行直接命令"""
@@ -1487,12 +1507,12 @@ class AICADPlugin(QMainWindow):
         try:
             self.connect_to_acad()
         except Exception as e:
-            self.add_chat_message("系统", f"⚠ AutoCAD 连接初始化失败: {str(e)}")
+            self.add_chat_message("系统", f"[警告] AutoCAD 连接初始化失败: {str(e)}")
 
         try:
             self.init_ai_model()
         except Exception as e:
-            self.add_chat_message("系统", f"⚠ AI 模型初始化失败: {str(e)}")
+            self.add_chat_message("系统", f"[警告] AI 模型初始化失败: {str(e)}")
 
         self.update_status_bar("就绪 - 输入指令控制AutoCAD")
 
@@ -1509,14 +1529,14 @@ class AICADPlugin(QMainWindow):
             if not db_cfg.get("enabled"):
                 self.db_status_indicator.set_status("disconnected")
                 self.db_status_label.setText("书库未启用")
-                self.add_chat_message("系统", "🗂 数据库配置已预置，当前未启用（可在设置中启用）")
+                self.add_chat_message("系统", "[数据库] 数据库配置已预置，当前未启用（可在设置中启用）")
                 return
 
             conn_str = (db_cfg.get("connection_string") or "").strip()
             if not conn_str:
                 self.db_status_indicator.set_status("disconnected")
                 self.db_status_label.setText("书库配置缺失")
-                self.add_chat_message("系统", "⚠ 数据库已启用但连接字符串为空")
+                self.add_chat_message("系统", "[警告] 数据库已启用但连接字符串为空")
                 return
 
             self.db_status_indicator.set_status("processing")
@@ -1532,7 +1552,7 @@ class AICADPlugin(QMainWindow):
         except Exception as e:
             self.db_status_indicator.set_status("disconnected")
             self.db_status_label.setText("书库连接失败")
-            self.add_chat_message("系统", f"⚠ 知识库数据库连接失败: {str(e)}")
+            self.add_chat_message("系统", f"[警告] 知识库数据库连接失败: {str(e)}")
 
     def update_status_bar(self, message):
         """更新状态栏"""

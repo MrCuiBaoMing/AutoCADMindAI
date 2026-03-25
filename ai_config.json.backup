@@ -1,0 +1,63 @@
+{
+  "models": [
+    {
+      "name": "google/gemma-3-4b",
+      "model_type": "lmstudio",
+      "api_key": "sk-lm-cxbQmSJM:sL5Xzjp6GCcC4Qs2jjWh",
+      "endpoint": "http://192.168.173.12:1234/v1",
+      "model_name": "google/gemma-3-4b"
+    },
+    {
+      "name": "本地模型",
+      "model_type": "local",
+      "api_key": "",
+      "endpoint": "",
+      "model_name": ""
+    },
+    {
+      "name": "英伟达模型",
+      "model_type": "lmstudio",
+      "api_key": "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",
+      "endpoint": "https://integrate.api.nvidia.com/v1",
+      "model_name": "moonshotai/kimi-k2.5"
+    },
+    {
+      "name": "Mistral Devstral",
+      "model_type": "lmstudio",
+      "api_key": "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",
+      "endpoint": "https://integrate.api.nvidia.com/v1",
+      "model_name": "mistralai/devstral-2-123b-instruct-2512"
+    }
+  ],
+  "autocad": {
+    "connection_timeout": 10,
+    "command_delay": 1,
+    "auto_connect": false
+  },
+  "database": {
+    "enabled": true,
+    "connection_string": "DRIVER={ODBC Driver 17 for SQL Server};SERVER=192.168.10.13,1433;DATABASE=MyAiData;UID=sa;PWD=Capslock517;TrustServerCertificate=yes;",
+    "config_key": "app/global"
+  },
+  "web_search": {
+    "enabled": true,
+    "engines": [
+      "tavily"
+    ],
+    "tavily": {
+      "api_key": "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",
+      "max_results": 3,
+      "include_answer": true
+    },
+    "cache": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "max_size": 200
+    }
+  },
+  "general": {
+    "language": "简体中文",
+    "theme": "浅色",
+    "history_limit": 100
+  }
+}

@@ -100,7 +100,7 @@ class WebRetriever:
         elif not self.tavily_api_key and "tavily" in self.engines:
             print("[WebRetriever] 警告: Tavily 已启用但未配置 API Key")
 
-    def _search_tavily(self, query: str, max_results: int, timeout: float = 2.0) -> List[Dict]:
+    def _search_tavily(self, query: str, max_results: int, timeout: float = 8.0) -> List[Dict]:
         """
         使用 Tavily API 检索
 
@@ -193,12 +193,17 @@ class WebRetriever:
         if max_results is None:
             max_results = self.tavily_max_results
 
-        # 1. 检查缓存
-        if self.cache:
+        # 1. 检查缓存(实时信息查询跳过缓存)
+        realtime_keywords = ["今天", "明天", "昨天", "天气", "气温", "温度", "新闻", "最新", "实时", "当前", "现在", "总统", "股价", "汇率"]
+        needs_realtime = any(kw in query for kw in realtime_keywords)
+        
+        if self.cache and not needs_realtime:
             cached = self.cache.get(query, max_results)
             if cached is not None:
                 print(f"[WebRetriever] 缓存命中: {query}")
                 return cached
+        elif needs_realtime:
+            print(f"[WebRetriever] 实时信息查询，跳过缓存: {query}")
 
         # 2. 执行检索(按引擎顺序尝试)
         all_results = []
