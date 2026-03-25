@@ -59,6 +59,11 @@ class AIIntentAnalyzer:
         if any(kw in t for kw in time_weather_news):
             return True
 
+        # 规则 2.5: 建筑/工程规范类图纸绘制，建议参考外部资料（提高尺寸/规范精度）
+        architecture_keywords = ["楼房", "建筑", "立面", "平面图", "建筑规范", "层高", "结构", "建筑设计"]
+        if any(kw in t for kw in architecture_keywords):
+            return True
+
         # 规则 3: chat 意图且知识库未命中(由 Orchestrator 传入 context)
         if base_intent == "chat":
             kb_hit = context.get("kb_hit", False) if context else False

@@ -130,10 +130,13 @@ class OpenAIModel(AIModel):
             print("警告: 未设置OpenAI API密钥")
 
     def _build_messages(self, command: str, context: Optional[Dict[str, Any]] = None, history: Optional[list] = None):
-        system_prompt = "你是一个AutoCAD助手，能够将自然语言指令转换为AutoCAD命令。"
-        system_prompt += "请分析用户的请求，返回相应的AutoCAD命令。"
-        system_prompt += "如果需要执行多个命令，请按顺序列出。"
-        system_prompt += "仅返回命令，不要包含其他解释。"
+        system_prompt = "你是一个专业的AutoCAD绘图助手，专注于按用户需求生成可直接执行的AutoCAD命令。"
+        system_prompt += "\n- 如果用户要求绘制建筑类图纸（如楼房正立面、平面图、层高、门窗等），请明确生成结构化坐标和尺寸，并尽量避免图形重叠。"
+        system_prompt += "\n- 规则：只输出一个JSON对象，包含`commands`数组；不要输出多余文本。"
+        system_prompt += "\n- 坐标系：X向右，Y向上；基准原点(0,0)一般为建筑左下角或用户指定基点。"
+        system_prompt += "\n- 如果可能，请包含尺寸标注命令（例如 DIMLINEAR, DIMANGULAR），并标注关键层高/总高度。"
+        system_prompt += "\n- 复杂图形可以分步执行：先外围墙体，再门窗再内饰。"
+        system_prompt += "\n请分析用户需求并返回命令列表。"
         user_prompt = f"用户请求: {command}\n"
         if context:
             user_prompt += f"上下文: {json.dumps(context)}\n"
@@ -340,6 +343,12 @@ class LMStudioModel(AIModel):
 
     _SYSTEM_PROMPT = """你是AutoCAD智能绘图助手，能理解用户自然语言描述并自动生成绘图指令。
 
+## ⚠️ 重要：输出格式要求
+- 必须只输出一个完整的JSON对象
+- 不要在response字段中嵌套JSON字符串
+- 不要添加任何解释、注释或额外文本
+- JSON格式：{"intent":"drawing","response":"回复文本","drawing_commands":[...],"export_type":"..."}
+
 ## 核心规则
 1. 分析用户意图：是要绘图、问问题、还是其他操作
 2. 绘图需求必须返回 intent="drawing" 和 drawing_commands 数组
@@ -359,11 +368,11 @@ class LMStudioModel(AIModel):
 - 包含"怎么、如何、为什么、是什么"等疑问词 → intent="chat"
 - 普通问候或对话 → intent="chat"
 
-## 输出格式
+## 输出格式（严格遵守）
 {"intent":"drawing"|"export"|"chat","response":"给用户的简短回复","drawing_commands":[绘图指令数组],"export_type":"all"|"layers"|"entities"}
 
 ### 绘图意图 drawing
-返回绘图命令数组
+返回绘图命令数组，不要在response中嵌套JSON
 
 ### 导出意图 export
 返回 export_type 字段，可选值：
@@ -407,10 +416,26 @@ class LMStudioModel(AIModel):
 {"type":"polyline","points":[[x1,y1],[x2,y2],...],"closed":true|false}
 用于绘制不规则多边形或连续折线
 
+### 五角星 star
+五角星需要使用polyline绘制，计算五个顶点坐标：
+- 外圆半径R，内圆半径r（通常r = R * 0.382）
+- 顶点角度：72度间隔，交替使用R和r
+示例：
+- "五角星半径50" → 使用polyline连接10个点（5个外点+5个内点）
+坐标计算（以中心(50,50)为例）：
+外点：[50+0,50+50],[50+47.55,50+15.45],[50+29.39,50-40.45],[50-29.39,50-40.45],[50-47.55,50+15.45]
+内点：[50+0,50+19],[50+18.48,50-14.69],[50+45.0,50+0],[50+18.48,50+14.69],[50-18.48,50-14.69]
+
 ### 文字 text
 {"type":"text","content":"文字内容","position":[x,y,0],"height":字高}
 
 ## 复杂图形处理规则
+
+### 建筑/楼房绘图规范（重点）
+- 当用户描述“楼房”“层高”“正立面”“平面图”等时，必须严谨输出多段命令：先外框墙体，再门窗，再层高标注。
+- 四层楼建筑：按默认层高 3m 计算，总高度 12m；如果用户指定“楼房四层高度”，必须输出“每层3米，总高度12米”的尺寸描述或标注命令。
+- 正立面视图：X 轴为水平距离，Y 轴为高度；应按层高依次绘制每层水平线。
+- 平面图：应使用平面坐标，标出房间、门窗、墙厚、尺度等结构。
 
 ### 图形分解策略
 对于复杂图形，按以下步骤分解：
@@ -475,6 +500,10 @@ class LMStudioModel(AIModel):
 
 用户：画一个正六边形
 输出：{"intent":"drawing","response":"已绘制正六边形。","drawing_commands":[{"type":"polygon","center":[50,50],"radius":50,"sides":6}]}
+
+### 五角星示例
+用户：画一个五角星
+输出：{"intent":"drawing","response":"已绘制五角星。","drawing_commands":[{"type":"polyline","points":[[50.0,100.0],[38.77,65.45],[2.45,65.45],[31.84,44.1],[20.61,9.55],[50.0,30.9],[79.39,9.55],[68.16,44.1],[97.55,65.45],[61.23,65.45]],"closed":true}]}
 
 ### 组合示例
 用户：画一个圆和一个矩形
@@ -602,7 +631,7 @@ class LMStudioModel(AIModel):
             "model": self.model_name or "qwen2.5-0.5b-instruct",
             "messages": messages,
             "temperature": 0,  # 降低温度，减少随机性/推理过程
-            "max_tokens": 500
+            "max_tokens": 800  # 增加token数量，确保复杂绘图命令完整返回
         }
 
         # 如果有工具，尝试使用 tool_choice（部分模型支持）
@@ -687,9 +716,10 @@ class LMStudioModel(AIModel):
                 export_type = command_data.get("export_type", "all")
                 
                 # 【关键修复】如果 intent 是 chat 但 response 内容是嵌套的 JSON，再次解析
-                if intent == "chat" and drawing_commands == []:
+                if intent == "chat" and (drawing_commands == [] or not drawing_commands):
                     response_text = command_data.get("response", "")
                     if response_text and response_text.strip().startswith("{"):
+                        # 尝试解析嵌套JSON，即使不完整也尝试提取有用信息
                         nested_data = _extract_command_json(response_text)
                         if nested_data is not None:
                             nested_intent = nested_data.get("intent", "chat")
@@ -704,6 +734,39 @@ class LMStudioModel(AIModel):
                                 export_type = nested_data.get("export_type", "all")
                                 command_data["response"] = nested_data.get("response", response_text)
                                 command_data["intent"] = intent
+                        else:
+                            # 如果标准JSON解析失败，尝试手动解析不完整的JSON
+                            try:
+                                # 查找intent字段
+                                intent_match = re.search(r'"intent"\s*:\s*"([^"]+)"', response_text)
+                                if intent_match and intent_match.group(1) in ("drawing", "export"):
+                                    intent = intent_match.group(1)
+                                    command_data["intent"] = intent
+
+                                    # 查找drawing_commands字段
+                                    dc_match = re.search(r'"drawing_commands"\s*:\s*(\[[^\]]*\])', response_text)
+                                    if dc_match:
+                                        try:
+                                            drawing_commands = json.loads(dc_match.group(1))
+                                            if isinstance(drawing_commands, list):
+                                                command_data["drawing_commands"] = drawing_commands
+                                        except:
+                                            pass
+
+                                    # 查找response字段
+                                    resp_match = re.search(r'"response"\s*:\s*"([^"]*)"', response_text)
+                                    if resp_match:
+                                        command_data["response"] = resp_match.group(1)
+
+                                    # 查找export_type字段
+                                    et_match = re.search(r'"export_type"\s*:\s*"([^"]*)"', response_text)
+                                    if et_match:
+                                        export_type = et_match.group(1)
+                                        command_data["export_type"] = export_type
+
+                            except Exception as e:
+                                print(f"[AI Model] 手动解析嵌套JSON失败: {e}")
+                                pass
                 
                 # 安全兜底：非 command 意图禁止下发命令
                 if intent != "command":
@@ -766,7 +829,7 @@ class LMStudioModel(AIModel):
             "model": self.model_name or "qwen2.5-0.5b-instruct",
             "messages": messages,
             "temperature": 0.3,
-            "max_tokens": 200,  # 进一步减少到 200，加快生成速度
+            "max_tokens": 400,  # 增加到400，确保分析和命令生成有足够空间
             "top_p": 0.9,
             "frequency_penalty": 0,
             "presence_penalty": 0
