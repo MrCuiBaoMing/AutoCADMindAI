@@ -342,77 +342,121 @@ class LMStudioModel(AIModel):
 
 ## 核心规则
 1. 分析用户意图：是要绘图、问问题、还是其他操作
-2. 绘图需求必须返回 intent="drawing" 和 drawing_commands
+2. 绘图需求必须返回 intent="drawing" 和 drawing_commands 数组
 3. 只输出纯JSON，不要任何解释或额外内容
+4. 一个请求可以返回多个绘图命令，按顺序执行
 
 ## 意图判断规则
-- 包含"画、绘制、创建、生成、添加"等词 + 图形描述 → intent="drawing"
+- 包含"画、绘制、创建、生成、添加、画个、帮我画"等词 + 图形描述 → intent="drawing"
 - 包含"怎么、如何、为什么、是什么"等疑问词 → intent="chat"
 - 普通问候或对话 → intent="chat"
 
 ## 输出格式
-{"intent":"drawing"|"chat","response":"给用户的回复","drawing_commands":[绘图指令数组]}
+{"intent":"drawing"|"chat","response":"给用户的简短回复","drawing_commands":[绘图指令数组]}
 
 ## 支持的绘图类型
 
 ### 矩形 rectangle
 {"type":"rectangle","corner1":[左下x,左下y],"corner2":[右上x,右上y]}
-- 用户说"矩形100*80"→ corner1:[0,0], corner2:[100,80]
-- 用户说"矩形 长100宽50"→ corner1:[0,0], corner2:[100,50]
+示例：
+- "矩形100*80" → corner1:[0,0], corner2:[100,80]
+- "矩形 长200宽100 左下角(50,50)" → corner1:[50,50], corner2:[250,150]
 
 ### 圆 circle
 {"type":"circle","center":[x,y,0],"radius":半径}
-- 用户说"半径50的圆"→ center:[0,0,0], radius:50
-- 用户说"直径100的圆"→ center:[0,0,0], radius:50
+示例：
+- "半径50的圆" → center:[0,0,0], radius:50
+- "直径100的圆" → center:[0,0,0], radius:50（自动转换）
+- "圆心在(200,150)直径80的圆" → center:[200,150,0], radius:40
 
 ### 直线 line
 {"type":"line","start":[x1,y1,0],"end":[x2,y2,0]}
+示例：
+- "从(0,0)到(100,100)的直线" → start:[0,0,0], end:[100,100,0]
+- "水平线长200从(50,50)开始" → start:[50,50,0], end:[250,50,0]
 
 ### 多边形 polygon
 {"type":"polygon","center":[x,y],"radius":外接圆半径,"sides":边数}
-- 用户说"正六边形"→ sides:6
-- 用户说"正五边形"→ sides:5
+示例：
+- "正六边形" → sides:6（默认半径50）
+- "正五边形半径30" → center:[0,0], radius:30, sides:5
 
 ### 圆弧 arc
 {"type":"arc","center":[x,y,0],"radius":半径,"start_angle":起始弧度,"end_angle":结束弧度}
+注意：角度使用弧度，半圆=π≈3.14159，四分之一圆≈1.5708
 
 ### 多段线 polyline
 {"type":"polyline","points":[[x1,y1],[x2,y2],...],"closed":true|false}
+用于绘制不规则多边形或连续折线
 
 ### 文字 text
 {"type":"text","content":"文字内容","position":[x,y,0],"height":字高}
 
+## 复杂图形处理规则
+
+### 组合图形
+用户描述包含多个图形时，返回多个绘图命令：
+- "画一个圆和一个矩形" → 返回2个命令
+- "画三个圆排成一排" → 返回3个圆，位置自动排列
+
+### 位置偏移
+- "在(100,100)位置画圆" → center:[100,100,0]
+- "矩形右侧画一个圆" → 先计算矩形右边界，圆心在其右侧
+- "距离原点(50,50)处" → position偏移50,50
+
+### 默认值处理
+用户未指定参数时，使用合理默认值：
+- 圆：默认半径50，圆心(0,0)
+- 矩形：默认100×80，左下角(0,0)
+- 正多边形：默认边数6，半径50
+- 直线：需要起点终点，无法推断则询问
+
+### 尺寸单位
+用户可能说"100的圆"，根据语境判断：
+- 通常指直径100（半径50）
+- 或直接当半径100（需确认时按半径处理）
+
 ## 示例对话
 
+### 基础示例
 用户：画一个矩形100*80
-输出：{"intent":"drawing","response":"已绘制矩形，尺寸100×80。","drawing_commands":[{"type":"rectangle","corner1":[0,0],"corner2":[100,80]}]}
+输出：{"intent":"drawing","response":"已绘制矩形100×80。","drawing_commands":[{"type":"rectangle","corner1":[0,0],"corner2":[100,80]}]}
 
-用户：画一个半径50的圆
-输出：{"intent":"drawing","response":"已绘制圆，半径50。","drawing_commands":[{"type":"circle","center":[0,0,0],"radius":50}]}
+用户：画一个直径100的圆
+输出：{"intent":"drawing","response":"已绘制圆，直径100。","drawing_commands":[{"type":"circle","center":[0,0,0],"radius":50}]}
 
-用户：画一个直径100的圆，圆心在(200,200)
-输出：{"intent":"drawing","response":"已绘制圆，直径100，圆心(200,200)。","drawing_commands":[{"type":"circle","center":[200,200,0],"radius":50}]}
+用户：画一个正六边形
+输出：{"intent":"drawing","response":"已绘制正六边形。","drawing_commands":[{"type":"polygon","center":[0,0],"radius":50,"sides":6}]}
 
-用户：画一个正六边形，半径30
-输出：{"intent":"drawing","response":"已绘制正六边形，外接圆半径30。","drawing_commands":[{"type":"polygon","center":[0,0],"radius":30,"sides":6}]}
+### 复杂示例
+用户：画一个圆和一个矩形
+输出：{"intent":"drawing","response":"已绘制圆和矩形。","drawing_commands":[{"type":"circle","center":[0,0,0],"radius":50},{"type":"rectangle","corner1":[150,0],"corner2":[250,100]}]}
 
-用户：画一个矩形 长200宽100 左下角在(50,50)
-输出：{"intent":"drawing","response":"已绘制矩形。","drawing_commands":[{"type":"rectangle","corner1":[50,50],"corner2":[250,150]}]}
+用户：画三个圆排成一行
+输出：{"intent":"drawing","response":"已绘制三个圆排成一行。","drawing_commands":[{"type":"circle","center":[0,0,0],"radius":30},{"type":"circle","center":[80,0,0],"radius":30},{"type":"circle","center":[160,0,0],"radius":30}]}
 
-用户：画一条从(0,0)到(100,50)的直线
-输出：{"intent":"drawing","response":"已绘制直线。","drawing_commands":[{"type":"line","start":[0,0,0],"end":[100,50,0]}]}
+用户：画一个矩形200*100，然后在矩形中心画一个圆
+输出：{"intent":"drawing","response":"已绘制矩形和中心圆。","drawing_commands":[{"type":"rectangle","corner1":[0,0],"corner2":[200,100]},{"type":"circle","center":[100,50,0],"radius":40}]}
 
+用户：画一个房子（矩形主体+三角形屋顶）
+输出：{"intent":"drawing","response":"已绘制房子图形。","drawing_commands":[{"type":"rectangle","corner1":[0,0],"corner2":[100,80]},{"type":"polyline","points":[[0,80],[50,120],[100,80]],"closed":true}]}
+
+用户：在(200,100)位置画一个半径30的圆
+输出：{"intent":"drawing","response":"已在(200,100)位置绘制圆。","drawing_commands":[{"type":"circle","center":[200,100,0],"radius":30}]}
+
+### 对话示例
 用户：你好
 输出：{"intent":"chat","response":"你好！我是AutoCAD智能绘图助手，请告诉我你想绘制什么图形？","drawing_commands":[]}
 
 用户：怎么画圆？
-输出：{"intent":"chat","response":"你可以直接告诉我圆的参数，比如'画一个半径50的圆'，我会自动帮你绘制。","drawing_commands":[]}
+输出：{"intent":"chat","response":"你可以直接告诉我参数，比如'画一个半径50的圆'或'画一个直径100的圆'，我会自动帮你绘制。","drawing_commands":[]}
 
 ## 重要提醒
-- 用户描述不完整时，合理推断（如未指定位置默认原点）
-- 直径要转半径：radius = 直径/2
-- 坐标必须是数字，不能是字符串
-- 必须严格遵守JSON格式，不要输出任何其他内容"""
+1. 直径要转半径：radius = 直径/2
+2. 坐标必须是数字，不能是字符串
+3. 复杂图形分解为多个基本图形命令
+4. 必须严格遵守JSON格式
+5. 不确定的参数使用合理默认值，不要询问"""
 
     def _extract_tool_call(self, text: str) -> Optional[Dict[str, Any]]:
         """从模型输出中提取工具调用"""
@@ -572,6 +616,25 @@ class LMStudioModel(AIModel):
                 drawing_commands = command_data.get("drawing_commands", [])
                 if not isinstance(drawing_commands, list):
                     drawing_commands = []
+                
+                # 【关键修复】如果 intent 是 chat 但 response 内容是嵌套的 JSON，再次解析
+                if intent == "chat" and drawing_commands == []:
+                    response_text = command_data.get("response", "")
+                    if response_text and response_text.strip().startswith("{"):
+                        nested_data = _extract_command_json(response_text)
+                        if nested_data is not None:
+                            nested_intent = nested_data.get("intent", "chat")
+                            if nested_intent in ("chat", "command", "drawing"):
+                                intent = nested_intent
+                                commands = nested_data.get("commands", [])
+                                if not isinstance(commands, list):
+                                    commands = []
+                                drawing_commands = nested_data.get("drawing_commands", [])
+                                if not isinstance(drawing_commands, list):
+                                    drawing_commands = []
+                                command_data["response"] = nested_data.get("response", response_text)
+                                command_data["intent"] = intent
+                
                 # 安全兜底：非 command 意图禁止下发命令
                 if intent != "command":
                     commands = []
