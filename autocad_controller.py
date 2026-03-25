@@ -38,6 +38,63 @@ def _format_com_error(e: Exception) -> str:
         return "COM调用异常"
 
 
+def _format_geometry_key(key: str) -> str:
+    """将几何属性键转换为友好的中文显示名"""
+    key_map = {
+        "center_x": "圆心X",
+        "center_y": "圆心Y", 
+        "center_z": "圆心Z",
+        "start_x": "起点X",
+        "start_y": "起点Y",
+        "start_z": "起点Z",
+        "end_x": "终点X",
+        "end_y": "终点Y",
+        "end_z": "终点Z",
+        "position_x": "位置X",
+        "position_y": "位置Y",
+        "position_z": "位置Z",
+        "insert_x": "插入点X",
+        "insert_y": "插入点Y",
+        "insert_z": "插入点Z",
+        "x": "X坐标",
+        "y": "Y坐标",
+        "z": "Z坐标",
+        "radius": "半径",
+        "diameter": "直径",
+        "length": "长度",
+        "width": "宽度",
+        "height": "高度/字高",
+        "area": "面积",
+        "circumference": "周长",
+        "arc_length": "弧长",
+        "angle": "角度",
+        "rotation": "旋转角度",
+        "start_angle_deg": "起始角度(度)",
+        "end_angle_deg": "终止角度(度)",
+        "start_angle_rad": "起始角度(弧度)",
+        "end_angle_rad": "终止角度(弧度)",
+        "major_radius": "长轴半径",
+        "minor_radius": "短轴半径",
+        "vertices_count": "顶点数量",
+        "vertices_list": "顶点坐标列表",
+        "closed": "是否闭合",
+        "degree": "阶数",
+        "control_points_count": "控制点数",
+        "text": "文本内容",
+        "pattern": "填充图案",
+        "block_name": "块名称",
+        "measurement": "测量值",
+        "color": "颜色",
+        "linetype": "线型",
+        "lineweight": "线宽",
+        "draw_command": "绘制命令",
+        "scale_x": "X缩放",
+        "scale_y": "Y缩放",
+        "scale_z": "Z缩放"
+    }
+    return key_map.get(key, key)
+
+
 class AutoCADController:
     """AutoCAD控制器类"""
     
@@ -791,8 +848,293 @@ class AutoCADController:
             logger.error(f"获取图层信息失败: {err}")
             return {"success": False, "message": f"获取失败: {err}", "layers": []}
 
+    def _get_entity_geometry(self, entity) -> dict:
+        """获取实体的几何详细信息（完整版，支持图形重建）"""
+        geometry = {}
+        entity_type = entity.ObjectName
+        draw_cmd = None  # 绘制命令，供其他智能体使用
+        
+        try:
+            if entity_type == "AcDbLine":
+                # 直线：起点、终点、长度、角度
+                start = entity.StartPoint
+                end = entity.EndPoint
+                geometry["start_x"] = round(start[0], 2)
+                geometry["start_y"] = round(start[1], 2)
+                geometry["start_z"] = round(start[2], 2)
+                geometry["end_x"] = round(end[0], 2)
+                geometry["end_y"] = round(end[1], 2)
+                geometry["end_z"] = round(end[2], 2)
+                geometry["length"] = round(entity.Length, 2)
+                geometry["angle"] = round(entity.Angle, 2)
+                # 绘制命令
+                draw_cmd = {
+                    "type": "line",
+                    "start": [round(start[0], 2), round(start[1], 2)],
+                    "end": [round(end[0], 2), round(end[1], 2)]
+                }
+                
+            elif entity_type == "AcDbCircle":
+                # 圆：圆心、半径、直径、面积、周长
+                center = entity.Center
+                radius = entity.Radius
+                geometry["center_x"] = round(center[0], 2)
+                geometry["center_y"] = round(center[1], 2)
+                geometry["center_z"] = round(center[2], 2)
+                geometry["radius"] = round(radius, 2)
+                geometry["diameter"] = round(radius * 2, 2)
+                geometry["area"] = round(3.14159 * radius * radius, 2)
+                geometry["circumference"] = round(2 * 3.14159 * radius, 2)
+                # 绘制命令
+                draw_cmd = {
+                    "type": "circle",
+                    "center": [round(center[0], 2), round(center[1], 2)],
+                    "radius": round(radius, 2)
+                }
+                
+            elif entity_type == "AcDbArc":
+                # 圆弧：圆心、半径、起始角度、终止角度、弧长
+                center = entity.Center
+                radius = entity.Radius
+                start_angle = entity.StartAngle
+                end_angle = entity.EndAngle
+                geometry["center_x"] = round(center[0], 2)
+                geometry["center_y"] = round(center[1], 2)
+                geometry["radius"] = round(radius, 2)
+                geometry["start_angle_deg"] = round(start_angle * 180 / 3.14159, 2)  # 角度制
+                geometry["end_angle_deg"] = round(end_angle * 180 / 3.14159, 2)  # 角度制
+                geometry["start_angle_rad"] = round(start_angle, 4)  # 弧度制
+                geometry["end_angle_rad"] = round(end_angle, 4)  # 弧度制
+                arc_length = radius * abs(end_angle - start_angle)
+                geometry["arc_length"] = round(arc_length, 2)
+                # 绘制命令
+                draw_cmd = {
+                    "type": "arc",
+                    "center": [round(center[0], 2), round(center[1], 2)],
+                    "radius": round(radius, 2),
+                    "start_angle": round(start_angle, 4),
+                    "end_angle": round(end_angle, 4)
+                }
+                
+            elif entity_type in ("AcDbPolyline", "AcDb2dPolyline", "AcDb3dPolyline"):
+                # 多段线：提取所有顶点坐标（关键！）
+                try:
+                    num_vertices = entity.NumberOfVertices
+                    geometry["vertices_count"] = num_vertices
+                except:
+                    num_vertices = 0
+                    geometry["vertices_count"] = "N/A"
+                
+                try:
+                    geometry["length"] = round(entity.Length, 2)
+                except:
+                    geometry["length"] = "N/A"
+                
+                try:
+                    geometry["closed"] = entity.Closed
+                except:
+                    geometry["closed"] = False
+                
+                try:
+                    if entity.Closed:
+                        geometry["area"] = round(entity.Area, 2)
+                except:
+                    pass
+                
+                # 提取所有顶点坐标（用于重建图形）
+                vertices_list = []
+                try:
+                    for i in range(num_vertices):
+                        coord = entity.Coordinate(i)
+                        vertices_list.append([round(coord[0], 2), round(coord[1], 2)])
+                    geometry["vertices_list"] = vertices_list
+                    # 绘制命令
+                    draw_cmd = {
+                        "type": "polyline",
+                        "vertices": vertices_list,
+                        "closed": geometry.get("closed", False)
+                    }
+                except Exception as e:
+                    geometry["vertices_error"] = str(e)
+                    
+            elif entity_type == "AcDbEllipse":
+                # 椭圆：圆心、主轴半径、次轴半径
+                center = entity.Center
+                geometry["center_x"] = round(center[0], 2)
+                geometry["center_y"] = round(center[1], 2)
+                geometry["center_z"] = round(center[2], 2)
+                try:
+                    geometry["major_radius"] = round(entity.MajorRadius, 2)
+                    geometry["minor_radius"] = round(entity.MinorRadius, 2)
+                    # 绘制命令
+                    draw_cmd = {
+                        "type": "ellipse",
+                        "center": [round(center[0], 2), round(center[1], 2)],
+                        "major_radius": round(entity.MajorRadius, 2),
+                        "minor_radius": round(entity.MinorRadius, 2)
+                    }
+                except:
+                    pass
+                    
+            elif entity_type == "AcDbText":
+                # 单行文字：位置、内容、高度、旋转角度
+                pos = entity.InsertionPoint
+                geometry["position_x"] = round(pos[0], 2)
+                geometry["position_y"] = round(pos[1], 2)
+                geometry["position_z"] = round(pos[2], 2)
+                geometry["text"] = entity.TextString
+                geometry["height"] = round(entity.Height, 2)
+                try:
+                    geometry["rotation"] = round(entity.Rotation, 2)
+                except:
+                    pass
+                # 绘制命令
+                draw_cmd = {
+                    "type": "text",
+                    "position": [round(pos[0], 2), round(pos[1], 2)],
+                    "text": entity.TextString,
+                    "height": round(entity.Height, 2)
+                }
+                
+            elif entity_type == "AcDbMText":
+                # 多行文字：位置、内容、高度、宽度
+                pos = entity.InsertionPoint
+                geometry["position_x"] = round(pos[0], 2)
+                geometry["position_y"] = round(pos[1], 2)
+                geometry["text"] = entity.TextString
+                geometry["height"] = round(entity.Height, 2)
+                try:
+                    geometry["width"] = round(entity.Width, 2)
+                except:
+                    pass
+                # 绘制命令
+                draw_cmd = {
+                    "type": "mtext",
+                    "position": [round(pos[0], 2), round(pos[1], 2)],
+                    "text": entity.TextString,
+                    "height": round(entity.Height, 2)
+                }
+                
+            elif entity_type == "AcDbPoint":
+                # 点：坐标
+                pos = entity.Coordinates
+                geometry["x"] = round(pos[0], 2)
+                geometry["y"] = round(pos[1], 2)
+                geometry["z"] = round(pos[2], 2) if len(pos) > 2 else 0
+                # 绘制命令
+                draw_cmd = {
+                    "type": "point",
+                    "position": [round(pos[0], 2), round(pos[1], 2)]
+                }
+                
+            elif entity_type in ("AcDbSpline", "AcDb2dSpline"):
+                # 样条曲线：控制点坐标
+                try:
+                    num_ctrl = entity.NumberOfControlPoints
+                    geometry["control_points_count"] = num_ctrl
+                    geometry["degree"] = entity.Degree
+                    # 提取控制点坐标
+                    ctrl_points = []
+                    for i in range(num_ctrl):
+                        pt = entity.GetControlPoint(i)
+                        ctrl_points.append([round(pt[0], 2), round(pt[1], 2)])
+                    geometry["control_points"] = ctrl_points
+                    # 绘制命令
+                    draw_cmd = {
+                        "type": "spline",
+                        "control_points": ctrl_points,
+                        "degree": entity.Degree
+                    }
+                except Exception as e:
+                    geometry["spline_error"] = str(e)
+                    
+            elif entity_type == "AcDbHatch":
+                # 填充：图案名、面积
+                try:
+                    geometry["pattern"] = entity.PatternName
+                    geometry["area"] = round(entity.Area, 2)
+                except:
+                    pass
+                    
+            elif entity_type in ("AcDbSolid", "AcDbTrace"):
+                # 实体填充：顶点坐标
+                try:
+                    coords = entity.Coordinates
+                    points = []
+                    for i in range(0, len(coords), 3):
+                        points.append([round(coords[i], 2), round(coords[i+1], 2)])
+                    geometry["points"] = points
+                    geometry["area"] = round(entity.Area, 2)
+                    # 绘制命令
+                    draw_cmd = {
+                        "type": "solid",
+                        "points": points
+                    }
+                except:
+                    pass
+                    
+            elif entity_type == "AcDbBlockReference":
+                # 块引用：插入点、名称、缩放、旋转
+                try:
+                    pos = entity.InsertionPoint
+                    geometry["insert_x"] = round(pos[0], 2)
+                    geometry["insert_y"] = round(pos[1], 2)
+                    geometry["insert_z"] = round(pos[2], 2)
+                    geometry["block_name"] = entity.Name
+                    geometry["rotation"] = round(entity.Rotation, 2)
+                    try:
+                        geometry["scale_x"] = round(entity.XScaleFactor, 2)
+                        geometry["scale_y"] = round(entity.YScaleFactor, 2)
+                        geometry["scale_z"] = round(entity.ZScaleFactor, 2)
+                    except:
+                        pass
+                    # 绘制命令
+                    draw_cmd = {
+                        "type": "block",
+                        "name": entity.Name,
+                        "insert": [round(pos[0], 2), round(pos[1], 2)],
+                        "rotation": round(entity.Rotation, 2)
+                    }
+                except:
+                    pass
+                    
+            elif entity_type in ("AcDbRotatedDimension", "AcDbAlignedDimension", "AcDbDiametricDimension", "AcDbRadialDimension"):
+                # 标注：测量值、位置
+                try:
+                    geometry["measurement"] = round(entity.Measurement, 2)
+                    geometry["text"] = entity.TextOverride if entity.TextOverride else str(round(entity.Measurement, 2))
+                except:
+                    pass
+                    
+            # 通用属性
+            try:
+                geometry["color"] = entity.Color
+            except:
+                pass
+            try:
+                geometry["linetype"] = entity.Linetype
+            except:
+                pass
+            try:
+                geometry["lineweight"] = entity.Lineweight
+            except:
+                pass
+            try:
+                geometry["layer"] = entity.Layer
+            except:
+                pass
+                
+            # 添加绘制命令
+            if draw_cmd:
+                geometry["draw_command"] = draw_cmd
+                
+        except Exception as e:
+            geometry["error"] = str(e)
+            
+        return geometry
+
     def get_entities_info(self) -> dict:
-        """获取所有实体信息（按类型统计）"""
+        """获取所有实体信息（含详细几何属性）"""
         if not self.ensure_document():
             return {"success": False, "message": "未连接到AutoCAD或无活动文档", "entities": []}
         
@@ -810,16 +1152,21 @@ class AutoCADController:
                     entity_stats[entity_type] = 0
                 entity_stats[entity_type] += 1
                 
-                # 获取实体详细信息（可选）
+                # 获取实体基本信息
                 try:
                     layer_name = entity.Layer
                 except:
                     layer_name = "未知"
                 
+                # 获取几何详细信息
+                geometry = self._get_entity_geometry(entity)
+                
                 entity_details.append({
+                    "index": i + 1,
                     "type": entity_type,
                     "layer": layer_name,
-                    "handle": entity.Handle
+                    "handle": entity.Handle,
+                    "geometry": geometry
                 })
             
             # 转换为列表格式
@@ -874,7 +1221,8 @@ class AutoCADController:
                 "layer_count": len(layers),
                 "type_stats": type_stats,
                 "total_entities": len(entities),
-                "layer_entity_count": layer_entity_count
+                "layer_entity_count": layer_entity_count,
+                "entities": entities  # 添加完整的实体数据
             }
             
         except Exception as e:
@@ -979,12 +1327,50 @@ class AutoCADController:
                 ws_layers.column_dimensions['E'].width = 12
                 ws_layers.column_dimensions['F'].width = 12
             
-            # 工作表3: 实体明细
+            # 工作表3: 实体明细（含几何信息）
             if info_type in ("all", "entities"):
                 ws_entities = wb.create_sheet("实体明细")
                 
-                # 表头
-                headers = ["序号", "实体类型", "所属图层", "句柄"]
+                # 获取所有实体
+                entities = drawing_info.get("entities", [])
+                
+                # 收集所有可能的几何属性名
+                all_geometry_keys = set()
+                for entity in entities:
+                    geometry = entity.get("geometry", {})
+                    # 排除复杂对象（列表、字典）
+                    for k, v in geometry.items():
+                        if not isinstance(v, (list, dict)):
+                            all_geometry_keys.add(k)
+                
+                # 排序几何属性，按优先级排列
+                priority_keys = [
+                    "center_x", "center_y", "center_z",
+                    "start_x", "start_y", "start_z",
+                    "end_x", "end_y", "end_z",
+                    "position_x", "position_y", "position_z",
+                    "insert_x", "insert_y", "insert_z",
+                    "x", "y", "z",
+                    "radius", "diameter",
+                    "length", "width", "height",
+                    "area", "circumference", "arc_length",
+                    "angle", "rotation", "start_angle_deg", "end_angle_deg",
+                    "major_radius", "minor_radius",
+                    "vertices_count", "closed", "degree",
+                    "text", "pattern", "block_name", "measurement",
+                    "color", "linetype", "lineweight"
+                ]
+                # 过滤出实际存在的属性
+                sorted_geometry_keys = [k for k in priority_keys if k in all_geometry_keys]
+                # 添加其他未列出的属性
+                for k in sorted(all_geometry_keys - set(priority_keys)):
+                    sorted_geometry_keys.append(k)
+                
+                # 动态表头：基本信息 + 几何属性 + 顶点坐标 + 绘制命令
+                base_headers = ["序号", "实体类型", "所属图层", "句柄"]
+                geometry_headers = [_format_geometry_key(k) for k in sorted_geometry_keys]
+                extra_headers = ["顶点坐标列表", "绘制命令(JSON)"]
+                headers = base_headers + geometry_headers + extra_headers
                 ws_entities.append(headers)
                 
                 # 设置表头样式
@@ -995,20 +1381,59 @@ class AutoCADController:
                     cell.alignment = center_align
                 
                 # 添加数据
-                entities = drawing_info.get("entities", [])
+                import json
                 for idx, entity in enumerate(entities, 1):
-                    ws_entities.append([
+                    geometry = entity.get("geometry", {})
+                    row_data = [
                         idx,
                         entity["type"],
                         entity["layer"],
                         entity["handle"]
-                    ])
+                    ]
+                    # 添加几何属性值（排除复杂对象）
+                    for key in sorted_geometry_keys:
+                        value = geometry.get(key, "")
+                        row_data.append(value)
+                    
+                    # 添加顶点坐标列表（转为字符串）
+                    vertices_list = geometry.get("vertices_list", [])
+                    if vertices_list:
+                        vertices_str = json.dumps(vertices_list, ensure_ascii=False)
+                    else:
+                        vertices_str = ""
+                    row_data.append(vertices_str)
+                    
+                    # 添加绘制命令（转为字符串）
+                    draw_cmd = geometry.get("draw_command", {})
+                    if draw_cmd:
+                        draw_cmd_str = json.dumps(draw_cmd, ensure_ascii=False)
+                    else:
+                        draw_cmd_str = ""
+                    row_data.append(draw_cmd_str)
+                    
+                    ws_entities.append(row_data)
                 
                 # 调整列宽
-                ws_entities.column_dimensions['A'].width = 10
-                ws_entities.column_dimensions['B'].width = 20
-                ws_entities.column_dimensions['C'].width = 30
-                ws_entities.column_dimensions['D'].width = 20
+                ws_entities.column_dimensions['A'].width = 8   # 序号
+                ws_entities.column_dimensions['B'].width = 18  # 实体类型
+                ws_entities.column_dimensions['C'].width = 20  # 所属图层
+                ws_entities.column_dimensions['D'].width = 12  # 句柄
+                # 几何属性列宽
+                col_idx = 5
+                for key in sorted_geometry_keys:
+                    col_letter = chr(64 + col_idx) if col_idx <= 26 else chr(64 + (col_idx - 1) // 26) + chr(65 + (col_idx - 1) % 26)
+                    if "text" in key.lower():
+                        ws_entities.column_dimensions[col_letter].width = 30
+                    elif key in ("radius", "diameter", "length", "area"):
+                        ws_entities.column_dimensions[col_letter].width = 12
+                    else:
+                        ws_entities.column_dimensions[col_letter].width = 15
+                    col_idx += 1
+                # 顶点坐标和绘制命令列宽
+                for _ in range(2):
+                    col_letter = chr(64 + col_idx) if col_idx <= 26 else chr(64 + (col_idx - 1) // 26) + chr(65 + (col_idx - 1) % 26)
+                    ws_entities.column_dimensions[col_letter].width = 50
+                    col_idx += 1
             
             # 保存文件
             wb.save(filepath)
