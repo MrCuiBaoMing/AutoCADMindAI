@@ -49,13 +49,20 @@ class AutoCADController:
 
     def ensure_document(self) -> bool:
         """重新获取当前活动文档，避免引用失效（切换文档、停止后再次会话等）"""
-        if not self.is_connected or not self.acad_app:
+        if not self.acad_app:
+            logger.warning("ensure_document: acad_app 为空")
             return False
         try:
+            # 每次都重新获取活动文档，确保引用有效
             self.acad_doc = self.acad_app.ActiveDocument
-            return self.acad_doc is not None
+            if self.acad_doc is None:
+                logger.warning("ensure_document: ActiveDocument 返回 None，请先打开 DWG 图纸")
+                return False
+            # 额外验证：尝试访问文档属性
+            _ = self.acad_doc.Name
+            return True
         except Exception as e:
-            logger.warning(f"重新获取活动文档失败: {_format_com_error(e)}")
+            logger.warning(f"ensure_document 失败: {_format_com_error(e)}")
             self.acad_doc = None
             return False
 
@@ -266,3 +273,486 @@ class AutoCADController:
             time.sleep(interval)
 
         return success or kb_success
+
+    # ==================== COM API 直接绘图方法 ====================
+    # 绕过命令行，直接使用 AutoCAD COM API 创建图形对象
+    # 优势：完全自动化、无需用户干预、执行速度快、支持撤销
+
+    def _make_point(self, coords: tuple) -> win32com.client.VARIANT:
+        """创建 AutoCAD 3D 点坐标（COM VARIANT 数组）"""
+        if len(coords) >= 3:
+            x, y, z = float(coords[0]), float(coords[1]), float(coords[2])
+        elif len(coords) == 2:
+            x, y, z = float(coords[0]), float(coords[1]), 0.0
+        else:
+            x, y, z = 0.0, 0.0, 0.0
+        return win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, [x, y, z])
+
+    def _make_point_2d(self, coords: list) -> win32com.client.VARIANT:
+        """创建 2D 点坐标数组（用于多段线等）"""
+        flat = []
+        for pt in coords:
+            flat.append(float(pt[0]))
+            flat.append(float(pt[1]))
+        return win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, flat)
+
+    def draw_line(self, start: tuple, end: tuple, layer: str = None) -> dict:
+        """
+        绘制直线
+        
+        Args:
+            start: 起点 (x, y) 或 (x, y, z)
+            end: 终点 (x, y) 或 (x, y, z)
+            layer: 图层名（可选）
+        
+        Returns:
+            {"success": bool, "message": str, "entity": object}
+        """
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        try:
+            start_point = self._make_point(start)
+            end_point = self._make_point(end)
+            
+            line = self.acad_doc.ModelSpace.AddLine(start_point, end_point)
+            
+            if layer:
+                try:
+                    line.Layer = layer
+                except Exception:
+                    pass  # 图层不存在时忽略
+            
+            logger.info(f"已绘制直线: {start} -> {end}")
+            return {"success": True, "message": f"直线已绘制", "entity": line}
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"绘制直线失败: {err}")
+            return {"success": False, "message": f"绘制直线失败: {err}"}
+
+    def draw_circle(self, center: tuple, radius: float, layer: str = None) -> dict:
+        """
+        绘制圆
+        
+        Args:
+            center: 圆心 (x, y) 或 (x, y, z)
+            radius: 半径
+            layer: 图层名（可选）
+        
+        Returns:
+            {"success": bool, "message": str, "entity": object}
+        """
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        try:
+            center_point = self._make_point(center)
+            circle = self.acad_doc.ModelSpace.AddCircle(center_point, float(radius))
+            
+            if layer:
+                try:
+                    circle.Layer = layer
+                except Exception:
+                    pass
+            
+            logger.info(f"已绘制圆: 圆心{center}, 半径{radius}")
+            return {"success": True, "message": f"圆已绘制（半径={radius}）", "entity": circle}
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"绘制圆失败: {err}")
+            return {"success": False, "message": f"绘制圆失败: {err}"}
+
+    def draw_rectangle(self, corner1: tuple, corner2: tuple, layer: str = None) -> dict:
+        """
+        绘制矩形（闭合多段线）
+        
+        Args:
+            corner1: 角点1 (x, y)
+            corner2: 对角点2 (x, y)
+            layer: 图层名（可选）
+        
+        Returns:
+            {"success": bool, "message": str, "entity": object}
+        """
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        try:
+            x1, y1 = float(corner1[0]), float(corner1[1])
+            x2, y2 = float(corner2[0]), float(corner2[1])
+            
+            # 四个顶点（闭合）
+            points = self._make_point_2d([
+                (x1, y1), (x2, y1), (x2, y2), (x1, y2)
+            ])
+            
+            pline = self.acad_doc.ModelSpace.AddLightweightPolyline(points)
+            pline.Closed = True
+            
+            if layer:
+                try:
+                    pline.Layer = layer
+                except Exception:
+                    pass
+            
+            logger.info(f"已绘制矩形: ({x1},{y1}) - ({x2},{y2})")
+            return {"success": True, "message": f"矩形已绘制", "entity": pline}
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"绘制矩形失败: {err}")
+            return {"success": False, "message": f"绘制矩形失败: {err}"}
+
+    def draw_arc(self, center: tuple, radius: float, start_angle: float, end_angle: float, layer: str = None) -> dict:
+        """
+        绘制圆弧
+        
+        Args:
+            center: 圆心 (x, y) 或 (x, y, z)
+            radius: 半径
+            start_angle: 起始角度（弧度）
+            end_angle: 结束角度（弧度）
+            layer: 图层名（可选）
+        
+        Returns:
+            {"success": bool, "message": str, "entity": object}
+        """
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        try:
+            center_point = self._make_point(center)
+            arc = self.acad_doc.ModelSpace.AddArc(
+                center_point, 
+                float(radius), 
+                float(start_angle), 
+                float(end_angle)
+            )
+            
+            if layer:
+                try:
+                    arc.Layer = layer
+                except Exception:
+                    pass
+            
+            logger.info(f"已绘制圆弧: 圆心{center}, 半径{radius}")
+            return {"success": True, "message": "圆弧已绘制", "entity": arc}
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"绘制圆弧失败: {err}")
+            return {"success": False, "message": f"绘制圆弧失败: {err}"}
+
+    def draw_text(self, text: str, position: tuple, height: float = 2.5, layer: str = None) -> dict:
+        """
+        添加单行文字
+        
+        Args:
+            text: 文字内容
+            position: 插入点 (x, y) 或 (x, y, z)
+            height: 字高
+            layer: 图层名（可选）
+        
+        Returns:
+            {"success": bool, "message": str, "entity": object}
+        """
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        try:
+            insert_point = self._make_point(position)
+            text_obj = self.acad_doc.ModelSpace.AddText(text, insert_point, float(height))
+            
+            if layer:
+                try:
+                    text_obj.Layer = layer
+                except Exception:
+                    pass
+            
+            logger.info(f"已添加文字: '{text}'")
+            return {"success": True, "message": f"文字已添加", "entity": text_obj}
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"添加文字失败: {err}")
+            return {"success": False, "message": f"添加文字失败: {err}"}
+
+    def draw_polyline(self, points: list, closed: bool = False, layer: str = None) -> dict:
+        """
+        绘制多段线
+        
+        Args:
+            points: 点列表 [(x1,y1), (x2,y2), ...]
+            closed: 是否闭合
+            layer: 图层名（可选）
+        
+        Returns:
+            {"success": bool, "message": str, "entity": object}
+        """
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        if len(points) < 2:
+            return {"success": False, "message": "多段线至少需要2个点"}
+        
+        try:
+            point_array = self._make_point_2d(points)
+            pline = self.acad_doc.ModelSpace.AddLightweightPolyline(point_array)
+            pline.Closed = closed
+            
+            if layer:
+                try:
+                    pline.Layer = layer
+                except Exception:
+                    pass
+            
+            logger.info(f"已绘制多段线: {len(points)}个点")
+            return {"success": True, "message": f"多段线已绘制（{len(points)}个点）", "entity": pline}
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"绘制多段线失败: {err}")
+            return {"success": False, "message": f"绘制多段线失败: {err}"}
+
+    def draw_polygon(self, center: tuple, radius: float, sides: int, layer: str = None) -> dict:
+        """
+        绘制正多边形（通过命令行，因为 COM API 没有直接方法）
+        
+        Args:
+            center: 中心点 (x, y)
+            radius: 外接圆半径
+            sides: 边数（3-1024）
+            layer: 图层名（可选）
+        
+        Returns:
+            {"success": bool, "message": str}
+        """
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        if sides < 3 or sides > 1024:
+            return {"success": False, "message": "边数必须在3-1024之间"}
+        
+        try:
+            x, y = float(center[0]), float(center[1])
+            # 使用 POLYGON 命令
+            cmd = f"_POLYGON {sides} {x},{y} I {radius}\n"
+            self.acad_doc.SendCommand(cmd)
+            
+            logger.info(f"已绘制正{sides}边形")
+            return {"success": True, "message": f"正{sides}边形已绘制"}
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"绘制多边形失败: {err}")
+            return {"success": False, "message": f"绘制多边形失败: {err}"}
+
+    def set_layer(self, layer_name: str, create_if_not_exists: bool = True) -> dict:
+        """
+        设置当前图层
+        
+        Args:
+            layer_name: 图层名
+            create_if_not_exists: 不存在时是否创建
+        
+        Returns:
+            {"success": bool, "message": str}
+        """
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        try:
+            layers = self.acad_doc.Layers
+            
+            # 检查图层是否存在
+            layer = None
+            try:
+                layer = layers.Item(layer_name)
+            except Exception:
+                # 图层不存在
+                if create_if_not_exists:
+                    layer = layers.Add(layer_name)
+                    logger.info(f"已创建图层: {layer_name}")
+                else:
+                    return {"success": False, "message": f"图层 '{layer_name}' 不存在"}
+            
+            if layer:
+                self.acad_doc.ActiveLayer = layer
+                logger.info(f"已设置当前图层: {layer_name}")
+                return {"success": True, "message": f"当前图层已设置为 '{layer_name}'"}
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"设置图层失败: {err}")
+            return {"success": False, "message": f"设置图层失败: {err}"}
+
+    def zoom_extents(self) -> bool:
+        """缩放到全部图形"""
+        if not self.acad_app:
+            return False
+        try:
+            self.acad_app.ZoomExtents()
+            logger.info("已缩放到全部图形")
+            return True
+        except Exception as e:
+            logger.warning(f"缩放失败: {_format_com_error(e)}")
+            return False
+
+    def zoom_center(self, center: tuple, magnification: float = 1.0) -> bool:
+        """缩放到指定中心点"""
+        if not self.acad_app:
+            return False
+        try:
+            center_point = self._make_point(center)
+            self.acad_app.ZoomCenter(center_point, float(magnification))
+            return True
+        except Exception as e:
+            logger.warning(f"缩放失败: {_format_com_error(e)}")
+            return False
+
+    def get_entity_count(self) -> int:
+        """获取模型空间中的实体数量"""
+        if not self.ensure_document():
+            return 0
+        try:
+            return self.acad_doc.ModelSpace.Count
+        except Exception:
+            return 0
+
+    def delete_last_entity(self) -> dict:
+        """删除最后一个绘制的实体"""
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        try:
+            count = self.acad_doc.ModelSpace.Count
+            if count > 0:
+                last_entity = self.acad_doc.ModelSpace.Item(count - 1)
+                last_entity.Delete()
+                logger.info("已删除最后一个实体")
+                return {"success": True, "message": "已删除最后一个实体"}
+            else:
+                return {"success": False, "message": "模型空间中没有实体"}
+                
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"删除实体失败: {err}")
+            return {"success": False, "message": f"删除失败: {err}"}
+
+    def execute_drawing_commands(self, commands: list) -> dict:
+        """
+        批量执行绘图命令
+        
+        Args:
+            commands: 绘图命令列表，格式如:
+                [
+                    {"type": "line", "start": [0, 0], "end": [100, 100]},
+                    {"type": "circle", "center": [50, 50], "radius": 25},
+                    {"type": "rectangle", "corner1": [0, 0], "corner2": [100, 50]}
+                ]
+        
+        Returns:
+            {"success": bool, "message": str, "results": list, "failed_count": int}
+        """
+        if not commands:
+            return {"success": False, "message": "没有绘图命令", "results": [], "failed_count": 0}
+        
+        results = []
+        failed_count = 0
+        
+        for cmd in commands:
+            cmd_type = cmd.get("type", "").lower()
+            result = {"type": cmd_type, "success": False}
+            
+            try:
+                if cmd_type == "line":
+                    result = self.draw_line(
+                        cmd.get("start", (0, 0)),
+                        cmd.get("end", (0, 0)),
+                        cmd.get("layer")
+                    )
+                    result["type"] = "line"
+                    
+                elif cmd_type == "circle":
+                    # 支持直径和半径两种参数
+                    center = cmd.get("center", (0, 0))
+                    radius = cmd.get("radius")
+                    if radius is None:
+                        diameter = cmd.get("diameter")
+                        if diameter is not None:
+                            radius = float(diameter) / 2
+                        else:
+                            radius = 10  # 默认半径
+                    result = self.draw_circle(
+                        center,
+                        float(radius),
+                        cmd.get("layer")
+                    )
+                    result["type"] = "circle"
+                    
+                elif cmd_type == "rectangle" or cmd_type == "rect":
+                    result = self.draw_rectangle(
+                        cmd.get("corner1", (0, 0)),
+                        cmd.get("corner2", (100, 100)),
+                        cmd.get("layer")
+                    )
+                    result["type"] = "rectangle"
+                    
+                elif cmd_type == "arc":
+                    result = self.draw_arc(
+                        cmd.get("center", (0, 0)),
+                        cmd.get("radius", 10),
+                        cmd.get("start_angle", 0),
+                        cmd.get("end_angle", 3.14159),
+                        cmd.get("layer")
+                    )
+                    result["type"] = "arc"
+                    
+                elif cmd_type == "text":
+                    result = self.draw_text(
+                        cmd.get("content", ""),
+                        cmd.get("position", (0, 0)),
+                        cmd.get("height", 2.5),
+                        cmd.get("layer")
+                    )
+                    result["type"] = "text"
+                    
+                elif cmd_type == "polyline" or cmd_type == "pline":
+                    result = self.draw_polyline(
+                        cmd.get("points", []),
+                        cmd.get("closed", False),
+                        cmd.get("layer")
+                    )
+                    result["type"] = "polyline"
+                    
+                elif cmd_type == "polygon":
+                    result = self.draw_polygon(
+                        cmd.get("center", (0, 0)),
+                        cmd.get("radius", 10),
+                        cmd.get("sides", 6),
+                        cmd.get("layer")
+                    )
+                    result["type"] = "polygon"
+                    
+                else:
+                    result = {"success": False, "message": f"未知的绘图类型: {cmd_type}", "type": cmd_type}
+                
+            except Exception as e:
+                result = {"success": False, "message": f"执行异常: {str(e)}", "type": cmd_type}
+            
+            if not result.get("success"):
+                failed_count += 1
+            results.append(result)
+        
+        success = failed_count == 0
+        message = f"完成 {len(commands)} 个绘图命令，失败 {failed_count} 个"
+        logger.info(message)
+        
+        return {
+            "success": success,
+            "message": message,
+            "results": results,
+            "failed_count": failed_count
+        }

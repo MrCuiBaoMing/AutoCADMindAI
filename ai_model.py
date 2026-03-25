@@ -338,24 +338,81 @@ class LMStudioModel(AIModel):
                 desc += "  参数: " + ", ".join(params.keys()) + "\n"
         return desc
 
-    _SYSTEM_PROMPT = """你是一个AutoCAD智能助手。
+    _SYSTEM_PROMPT = """你是AutoCAD智能绘图助手，能理解用户自然语言描述并自动生成绘图指令。
 
-你只能输出纯JSON，不能输出任何其他内容、解释、推理过程。
+## 核心规则
+1. 分析用户意图：是要绘图、问问题、还是其他操作
+2. 绘图需求必须返回 intent="drawing" 和 drawing_commands
+3. 只输出纯JSON，不要任何解释或额外内容
 
-禁止输出：
-- "首先"、"根据"、"因为"、"所以"等推理词
-- 任何解释你为什么这样回答的文字
-- JSON以外的任何内容
+## 意图判断规则
+- 包含"画、绘制、创建、生成、添加"等词 + 图形描述 → intent="drawing"
+- 包含"怎么、如何、为什么、是什么"等疑问词 → intent="chat"
+- 普通问候或对话 → intent="chat"
 
-输出格式（必须是这个格式）：
-{"intent":"chat","response":"你的回复","commands":[]}
+## 输出格式
+{"intent":"drawing"|"chat","response":"给用户的回复","drawing_commands":[绘图指令数组]}
 
-示例：
+## 支持的绘图类型
+
+### 矩形 rectangle
+{"type":"rectangle","corner1":[左下x,左下y],"corner2":[右上x,右上y]}
+- 用户说"矩形100*80"→ corner1:[0,0], corner2:[100,80]
+- 用户说"矩形 长100宽50"→ corner1:[0,0], corner2:[100,50]
+
+### 圆 circle
+{"type":"circle","center":[x,y,0],"radius":半径}
+- 用户说"半径50的圆"→ center:[0,0,0], radius:50
+- 用户说"直径100的圆"→ center:[0,0,0], radius:50
+
+### 直线 line
+{"type":"line","start":[x1,y1,0],"end":[x2,y2,0]}
+
+### 多边形 polygon
+{"type":"polygon","center":[x,y],"radius":外接圆半径,"sides":边数}
+- 用户说"正六边形"→ sides:6
+- 用户说"正五边形"→ sides:5
+
+### 圆弧 arc
+{"type":"arc","center":[x,y,0],"radius":半径,"start_angle":起始弧度,"end_angle":结束弧度}
+
+### 多段线 polyline
+{"type":"polyline","points":[[x1,y1],[x2,y2],...],"closed":true|false}
+
+### 文字 text
+{"type":"text","content":"文字内容","position":[x,y,0],"height":字高}
+
+## 示例对话
+
+用户：画一个矩形100*80
+输出：{"intent":"drawing","response":"已绘制矩形，尺寸100×80。","drawing_commands":[{"type":"rectangle","corner1":[0,0],"corner2":[100,80]}]}
+
+用户：画一个半径50的圆
+输出：{"intent":"drawing","response":"已绘制圆，半径50。","drawing_commands":[{"type":"circle","center":[0,0,0],"radius":50}]}
+
+用户：画一个直径100的圆，圆心在(200,200)
+输出：{"intent":"drawing","response":"已绘制圆，直径100，圆心(200,200)。","drawing_commands":[{"type":"circle","center":[200,200,0],"radius":50}]}
+
+用户：画一个正六边形，半径30
+输出：{"intent":"drawing","response":"已绘制正六边形，外接圆半径30。","drawing_commands":[{"type":"polygon","center":[0,0],"radius":30,"sides":6}]}
+
+用户：画一个矩形 长200宽100 左下角在(50,50)
+输出：{"intent":"drawing","response":"已绘制矩形。","drawing_commands":[{"type":"rectangle","corner1":[50,50],"corner2":[250,150]}]}
+
+用户：画一条从(0,0)到(100,50)的直线
+输出：{"intent":"drawing","response":"已绘制直线。","drawing_commands":[{"type":"line","start":[0,0,0],"end":[100,50,0]}]}
+
 用户：你好
-输出：{"intent":"chat","response":"你好！有什么可以帮你的吗？","commands":[]}
+输出：{"intent":"chat","response":"你好！我是AutoCAD智能绘图助手，请告诉我你想绘制什么图形？","drawing_commands":[]}
 
-用户：画一个圆
-输出：{"intent":"command","response":"好的，我来画圆","commands":["CIRCLE"]}"""
+用户：怎么画圆？
+输出：{"intent":"chat","response":"你可以直接告诉我圆的参数，比如'画一个半径50的圆'，我会自动帮你绘制。","drawing_commands":[]}
+
+## 重要提醒
+- 用户描述不完整时，合理推断（如未指定位置默认原点）
+- 直径要转半径：radius = 直径/2
+- 坐标必须是数字，不能是字符串
+- 必须严格遵守JSON格式，不要输出任何其他内容"""
 
     def _extract_tool_call(self, text: str) -> Optional[Dict[str, Any]]:
         """从模型输出中提取工具调用"""
@@ -505,18 +562,24 @@ class LMStudioModel(AIModel):
             command_data = _extract_command_json(assistant_message)
             if command_data is not None:
                 intent = command_data.get("intent", "chat")
-                if intent not in ("chat", "command"):
+                # 支持的意图类型: chat, command, drawing
+                if intent not in ("chat", "command", "drawing"):
                     intent = "chat"
                 commands = command_data.get("commands", [])
                 if not isinstance(commands, list):
                     commands = []
+                # 提取绘图命令
+                drawing_commands = command_data.get("drawing_commands", [])
+                if not isinstance(drawing_commands, list):
+                    drawing_commands = []
                 # 安全兜底：非 command 意图禁止下发命令
                 if intent != "command":
                     commands = []
                 return {
                     "intent": intent,
                     "response": command_data.get("response", assistant_message),
-                    "commands": commands
+                    "commands": commands,
+                    "drawing_commands": drawing_commands
                 }
 
             # 若未返回JSON，直接按普通聊天文本返回，避免误拦截正常回答

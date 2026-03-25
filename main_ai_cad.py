@@ -32,6 +32,7 @@ from core.config_db_store import ConfigDBStore
 from core.orchestrator import Orchestrator
 from core.ai_intent_analyzer import AIIntentAnalyzer
 from core.answer_cache import AnswerCache
+from core.drawing_parser import DrawingCommandParser
 from connectors.web_retriever import WebRetriever
 
 class StatusIndicator(QWidget):
@@ -1324,6 +1325,14 @@ class AICADPlugin(QMainWindow):
 
             response_text = result.get('response', '')
             intent = result.get('intent', 'chat')
+            
+            # 【调试日志】打印 AI 返回的完整结果
+            print(f"\n[DEBUG] AI 返回结果:")
+            print(f"  intent: {intent}")
+            print(f"  response: {response_text[:100] if response_text else 'None'}...")
+            print(f"  drawing_commands: {result.get('drawing_commands', [])}")
+            print(f"  commands: {result.get('commands', [])}")
+            print(f"  完整结果: {result}")
 
             # 【工具调用】处理 AI 返回的工具调用
             if intent == "tool_call":
@@ -1355,6 +1364,82 @@ class AICADPlugin(QMainWindow):
 
                     # 工具执行完成，恢复状态
                     self.update_status_bar("[OK] 工具执行完成")
+                    return
+
+            # 【自动绘图】处理 AI 返回的绘图指令
+            print(f"[DEBUG] 检查绘图意图: intent={intent}, is_drawing={intent == 'drawing'}")
+            
+            if intent == "drawing":
+                drawing_commands = result.get("drawing_commands", [])
+                print(f"[DEBUG] drawing_commands: {drawing_commands}")
+                
+                if not drawing_commands:
+                    # 尝试从 response_text 中解析绘图命令
+                    parser = DrawingCommandParser()
+                    parsed = parser.parse_ai_response(response_text)
+                    drawing_commands = parsed.get("drawing_commands", [])
+                    print(f"[DEBUG] 从文本解析出的绘图命令: {drawing_commands}")
+                    if parsed.get("response_text"):
+                        response_text = parsed["response_text"]
+                
+                if drawing_commands:
+                    # 检查 AutoCAD 连接状态
+                    print(f"[DEBUG] 检查连接: is_connected={self.acad.is_connected}, acad_app={self.acad.acad_app is not None}")
+                    if not self.acad.is_connected:
+                        self.add_chat_message("系统", "⚠️ AutoCAD 未连接，正在尝试连接...")
+                        self.connect_to_acad()
+                        QApplication.processEvents()
+                        print(f"[DEBUG] 连接后: is_connected={self.acad.is_connected}")
+                    
+                    if not self.acad.is_connected:
+                        self.add_chat_message("系统", "❌ 无法连接 AutoCAD，请确保 AutoCAD 已启动")
+                        self.is_processing = False
+                        self.set_send_button_state(False)
+                        return
+                    
+                    # 检查是否有活动文档
+                    doc_ok = self.acad.ensure_document()
+                    print(f"[DEBUG] 文档检查: ensure_document={doc_ok}, acad_doc={self.acad.acad_doc is not None}")
+                    if not doc_ok:
+                        self.add_chat_message("系统", "❌ AutoCAD 未打开任何图纸，请先打开一个 DWG 文件")
+                        self.is_processing = False
+                        self.set_send_button_state(False)
+                        return
+                    
+                    self.add_chat_message("系统", f"🎨 自动绘制 {len(drawing_commands)} 个图形...")
+                    self.update_status_bar("🎨 正在自动绘图...")
+                    
+                    # 执行绘图命令
+                    print(f"[DEBUG] 执行绘图命令: {drawing_commands}")
+                    draw_result = self.acad.execute_drawing_commands(drawing_commands)
+                    print(f"[DEBUG] 绘图结果: {draw_result}")
+                    
+                    if draw_result.get("success"):
+                        self.add_chat_message("AI", f"✅ {response_text or '绘图完成'}")
+                        # 缩放到全部图形
+                        self.acad.zoom_extents()
+                    else:
+                        failed = draw_result.get("failed_count", 0)
+                        # 显示详细错误信息
+                        error_details = []
+                        for r in draw_result.get("results", []):
+                            if not r.get("success"):
+                                error_details.append(f"  - {r.get('type', '未知')}: {r.get('message', '未知错误')}")
+                        error_msg = "\n".join(error_details) if error_details else ""
+                        self.add_chat_message("AI", f"⚠️ {response_text or '部分绘图失败'} (失败{failed}个)\n{error_msg}")
+                    
+                    # 写入对话历史
+                    self._chat_history.append({"role": "assistant", "content": response_text or "绘图完成"})
+                    if len(self._chat_history) > self._chat_history_max:
+                        self._chat_history = self._chat_history[-self._chat_history_max:]
+                    
+                    self._bridge_last_ai_seq += 1
+                    self._bridge_last_ai_message = str(response_text or "绘图完成")
+                    
+                    self.update_status_bar("[OK] 绘图完成")
+                    self.is_processing = False
+                    self.set_send_button_state(False)
+                    self.reset_status()
                     return
 
             response_text = self.clean_ai_response(response_text)
