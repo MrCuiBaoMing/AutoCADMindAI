@@ -1442,6 +1442,66 @@ class AICADPlugin(QMainWindow):
                     self.reset_status()
                     return
 
+            # ===== 导出意图处理 =====
+            print(f"[DEBUG] 检查导出意图: intent={intent}, is_export={intent == 'export'}")
+            
+            if intent == "export":
+                export_type = result.get("export_type", "all")
+                print(f"[DEBUG] export_type: {export_type}")
+                
+                # 检查 AutoCAD 连接状态
+                if not self.acad.is_connected:
+                    self.add_chat_message("系统", "⚠️ AutoCAD 未连接，正在尝试连接...")
+                    self.connect_to_acad()
+                    QApplication.processEvents()
+                
+                if not self.acad.is_connected:
+                    self.add_chat_message("系统", "❌ 无法连接 AutoCAD，请确保 AutoCAD 已启动")
+                    self.is_processing = False
+                    self.set_send_button_state(False)
+                    return
+                
+                # 检查是否有活动文档
+                doc_ok = self.acad.ensure_document()
+                if not doc_ok:
+                    self.add_chat_message("系统", "❌ AutoCAD 未打开任何图纸，请先打开一个 DWG 文件")
+                    self.is_processing = False
+                    self.set_send_button_state(False)
+                    return
+                
+                # 生成导出文件路径
+                import os
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                export_filename = f"CAD_导出_{timestamp}.xlsx"
+                export_filepath = os.path.join(os.path.expanduser("~"), "Desktop", export_filename)
+                
+                self.add_chat_message("系统", f"📊 正在导出图纸信息...")
+                self.update_status_bar("📊 正在导出到Excel...")
+                
+                # 执行导出
+                export_result = self.acad.export_to_excel(export_filepath, export_type)
+                print(f"[DEBUG] 导出结果: {export_result}")
+                
+                if export_result.get("success"):
+                    self.add_chat_message("AI", f"✅ {response_text or '导出成功'}\n文件已保存到: {export_filepath}")
+                else:
+                    self.add_chat_message("AI", f"❌ {export_result.get('message', '导出失败')}")
+                
+                # 写入对话历史
+                self._chat_history.append({"role": "assistant", "content": response_text or "导出完成"})
+                if len(self._chat_history) > self._chat_history_max:
+                    self._chat_history = self._chat_history[-self._chat_history_max:]
+                
+                self._bridge_last_ai_seq += 1
+                self._bridge_last_ai_message = str(response_text or "导出完成")
+                
+                self.update_status_bar("[OK] 导出完成")
+                self.is_processing = False
+                self.set_send_button_state(False)
+                self.reset_status()
+                return
+
             response_text = self.clean_ai_response(response_text)
 
             # ===== 写入答案缓存 =====

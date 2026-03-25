@@ -355,11 +355,22 @@ class LMStudioModel(AIModel):
 
 ## 意图判断规则
 - 包含"画、绘制、创建、生成、添加、画个、帮我画"等词 + 图形描述 → intent="drawing"
+- 包含"导出、导出Excel、导出表格、生成Excel、统计图纸、图纸信息"等词 → intent="export"
 - 包含"怎么、如何、为什么、是什么"等疑问词 → intent="chat"
 - 普通问候或对话 → intent="chat"
 
 ## 输出格式
-{"intent":"drawing"|"chat","response":"给用户的简短回复","drawing_commands":[绘图指令数组]}
+{"intent":"drawing"|"export"|"chat","response":"给用户的简短回复","drawing_commands":[绘图指令数组],"export_type":"all"|"layers"|"entities"}
+
+### 绘图意图 drawing
+返回绘图命令数组
+
+### 导出意图 export
+返回 export_type 字段，可选值：
+- "all": 导出全部信息（概览+图层+实体明细）
+- "layers": 仅导出图层信息
+- "entities": 仅导出实体明细
+- "overview": 仅导出图纸概览
 
 ## 支持的绘图类型
 
@@ -492,13 +503,27 @@ class LMStudioModel(AIModel):
 用户：怎么画圆？
 输出：{"intent":"chat","response":"你可以直接告诉我参数，比如'画一个半径50的圆'或'画一个直径100的圆'，我会自动帮你绘制。","drawing_commands":[]}
 
+### 导出示例
+用户：导出当前图纸信息到Excel
+输出：{"intent":"export","response":"正在导出图纸信息到Excel...","export_type":"all"}
+
+用户：导出图层信息
+输出：{"intent":"export","response":"正在导出图层信息...","export_type":"layers"}
+
+用户：统计图纸中的图形并导出
+输出：{"intent":"export","response":"正在统计并导出图形信息...","export_type":"entities"}
+
+用户：查看图纸概览并导出
+输出：{"intent":"export","response":"正在生成图纸概览并导出...","export_type":"overview"}
+
 ## 重要提醒
 1. 直径要转半径：radius = 直径/2
 2. 坐标必须是数字，不能是字符串
 3. 尽量使用正数坐标，从(0,0)或小正数开始
 4. 复杂图形分解为多个基本图形命令，注意坐标计算
 5. 必须严格遵守JSON格式
-6. 不确定的参数使用合理默认值，不要询问"""
+6. 不确定的参数使用合理默认值，不要询问
+7. 导出意图必须包含 export_type 字段"""
 
     def _extract_tool_call(self, text: str) -> Optional[Dict[str, Any]]:
         """从模型输出中提取工具调用"""
@@ -648,8 +673,8 @@ class LMStudioModel(AIModel):
             command_data = _extract_command_json(assistant_message)
             if command_data is not None:
                 intent = command_data.get("intent", "chat")
-                # 支持的意图类型: chat, command, drawing
-                if intent not in ("chat", "command", "drawing"):
+                # 支持的意图类型: chat, command, drawing, export
+                if intent not in ("chat", "command", "drawing", "export"):
                     intent = "chat"
                 commands = command_data.get("commands", [])
                 if not isinstance(commands, list):
@@ -658,6 +683,8 @@ class LMStudioModel(AIModel):
                 drawing_commands = command_data.get("drawing_commands", [])
                 if not isinstance(drawing_commands, list):
                     drawing_commands = []
+                # 提取导出类型
+                export_type = command_data.get("export_type", "all")
                 
                 # 【关键修复】如果 intent 是 chat 但 response 内容是嵌套的 JSON，再次解析
                 if intent == "chat" and drawing_commands == []:
@@ -666,7 +693,7 @@ class LMStudioModel(AIModel):
                         nested_data = _extract_command_json(response_text)
                         if nested_data is not None:
                             nested_intent = nested_data.get("intent", "chat")
-                            if nested_intent in ("chat", "command", "drawing"):
+                            if nested_intent in ("chat", "command", "drawing", "export"):
                                 intent = nested_intent
                                 commands = nested_data.get("commands", [])
                                 if not isinstance(commands, list):
@@ -674,6 +701,7 @@ class LMStudioModel(AIModel):
                                 drawing_commands = nested_data.get("drawing_commands", [])
                                 if not isinstance(drawing_commands, list):
                                     drawing_commands = []
+                                export_type = nested_data.get("export_type", "all")
                                 command_data["response"] = nested_data.get("response", response_text)
                                 command_data["intent"] = intent
                 
@@ -684,7 +712,8 @@ class LMStudioModel(AIModel):
                     "intent": intent,
                     "response": command_data.get("response", assistant_message),
                     "commands": commands,
-                    "drawing_commands": drawing_commands
+                    "drawing_commands": drawing_commands,
+                    "export_type": export_type
                 }
 
             # 若未返回JSON，直接按普通聊天文本返回，避免误拦截正常回答

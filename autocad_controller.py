@@ -756,3 +756,271 @@ class AutoCADController:
             "results": results,
             "failed_count": failed_count
         }
+
+    # ==================== 图纸信息读取与Excel导出 ====================
+
+    def get_layers_info(self) -> dict:
+        """获取所有图层信息"""
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档", "layers": []}
+        
+        try:
+            layers = self.acad_doc.Layers
+            layer_list = []
+            
+            for i in range(layers.Count):
+                layer = layers.Item(i)
+                layer_info = {
+                    "name": layer.Name,
+                    "on": layer.LayerOn,  # 是否打开
+                    "frozen": layer.Freeze,  # 是否冻结
+                    "locked": layer.Lock,  # 是否锁定
+                    "color": layer.Color,  # 颜色索引
+                }
+                layer_list.append(layer_info)
+            
+            logger.info(f"已获取 {len(layer_list)} 个图层信息")
+            return {
+                "success": True,
+                "message": f"共 {len(layer_list)} 个图层",
+                "layers": layer_list
+            }
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"获取图层信息失败: {err}")
+            return {"success": False, "message": f"获取失败: {err}", "layers": []}
+
+    def get_entities_info(self) -> dict:
+        """获取所有实体信息（按类型统计）"""
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档", "entities": []}
+        
+        try:
+            model_space = self.acad_doc.ModelSpace
+            entity_stats = {}
+            entity_details = []
+            
+            for i in range(model_space.Count):
+                entity = model_space.Item(i)
+                entity_type = entity.ObjectName  # 如 AcDbLine, AcDbCircle
+                
+                # 统计数量
+                if entity_type not in entity_stats:
+                    entity_stats[entity_type] = 0
+                entity_stats[entity_type] += 1
+                
+                # 获取实体详细信息（可选）
+                try:
+                    layer_name = entity.Layer
+                except:
+                    layer_name = "未知"
+                
+                entity_details.append({
+                    "type": entity_type,
+                    "layer": layer_name,
+                    "handle": entity.Handle
+                })
+            
+            # 转换为列表格式
+            stats_list = [{"type": k, "count": v} for k, v in entity_stats.items()]
+            
+            logger.info(f"已获取 {model_space.Count} 个实体，共 {len(stats_list)} 种类型")
+            return {
+                "success": True,
+                "message": f"共 {model_space.Count} 个实体",
+                "total_count": model_space.Count,
+                "type_stats": stats_list,
+                "entities": entity_details
+            }
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"获取实体信息失败: {err}")
+            return {"success": False, "message": f"获取失败: {err}", "entities": []}
+
+    def get_drawing_info(self) -> dict:
+        """获取完整图纸信息（图层 + 实体）"""
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        try:
+            # 获取图纸基本信息
+            doc_name = self.acad_doc.Name
+            
+            # 获取图层信息
+            layers_result = self.get_layers_info()
+            layers = layers_result.get("layers", [])
+            
+            # 获取实体信息
+            entities_result = self.get_entities_info()
+            type_stats = entities_result.get("type_stats", [])
+            entities = entities_result.get("entities", [])
+            
+            # 按图层分组统计
+            layer_entity_count = {}
+            for entity in entities:
+                layer = entity["layer"]
+                if layer not in layer_entity_count:
+                    layer_entity_count[layer] = 0
+                layer_entity_count[layer] += 1
+            
+            logger.info(f"已获取图纸 {doc_name} 的完整信息")
+            return {
+                "success": True,
+                "message": f"图纸信息已获取",
+                "document_name": doc_name,
+                "layers": layers,
+                "layer_count": len(layers),
+                "type_stats": type_stats,
+                "total_entities": len(entities),
+                "layer_entity_count": layer_entity_count
+            }
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"获取图纸信息失败: {err}")
+            return {"success": False, "message": f"获取失败: {err}"}
+
+    def export_to_excel(self, filepath: str, info_type: str = "all") -> dict:
+        """
+        导出图纸信息到Excel
+        
+        Args:
+            filepath: Excel文件路径
+            info_type: 导出类型 - "all"(全部), "layers"(图层), "entities"(实体)
+        
+        Returns:
+            {"success": bool, "message": str, "filepath": str}
+        """
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, PatternFill
+        except ImportError:
+            return {"success": False, "message": "请先安装 openpyxl: pip install openpyxl"}
+        
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+        
+        try:
+            # 获取图纸信息
+            drawing_info = self.get_drawing_info()
+            if not drawing_info.get("success"):
+                return {"success": False, "message": drawing_info.get("message", "获取图纸信息失败")}
+            
+            # 创建Excel工作簿
+            wb = Workbook()
+            
+            # 样式定义
+            header_font = Font(bold=True, size=12)
+            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            header_font_white = Font(bold=True, size=12, color="FFFFFF")
+            center_align = Alignment(horizontal='center', vertical='center')
+            
+            # 工作表1: 图纸概览
+            if info_type in ("all", "overview"):
+                ws_overview = wb.active
+                ws_overview.title = "图纸概览"
+                
+                overview_data = [
+                    ["图纸信息导出报告"],
+                    [""],
+                    ["图纸名称", drawing_info.get("document_name", "未知")],
+                    ["图层总数", drawing_info.get("layer_count", 0)],
+                    ["实体总数", drawing_info.get("total_entities", 0)],
+                    [""],
+                    ["实体类型统计"],
+                ]
+                
+                for row in overview_data:
+                    ws_overview.append(row)
+                
+                # 添加实体类型统计
+                ws_overview.append(["类型", "数量"])
+                for stat in drawing_info.get("type_stats", []):
+                    ws_overview.append([stat["type"], stat["count"]])
+                
+                # 设置标题样式
+                ws_overview['A1'].font = Font(bold=True, size=16)
+            
+            # 工作表2: 图层信息
+            if info_type in ("all", "layers"):
+                ws_layers = wb.create_sheet("图层信息")
+                
+                # 表头
+                headers = ["图层名称", "状态", "冻结", "锁定", "颜色索引", "实体数量"]
+                ws_layers.append(headers)
+                
+                # 设置表头样式
+                for col_idx, header in enumerate(headers, 1):
+                    cell = ws_layers.cell(row=1, column=col_idx)
+                    cell.font = header_font_white
+                    cell.fill = header_fill
+                    cell.alignment = center_align
+                
+                # 添加数据
+                layer_entity_count = drawing_info.get("layer_entity_count", {})
+                for layer in drawing_info.get("layers", []):
+                    layer_name = layer["name"]
+                    ws_layers.append([
+                        layer_name,
+                        "打开" if layer["on"] else "关闭",
+                        "是" if layer["frozen"] else "否",
+                        "是" if layer["locked"] else "否",
+                        layer["color"],
+                        layer_entity_count.get(layer_name, 0)
+                    ])
+                
+                # 调整列宽
+                ws_layers.column_dimensions['A'].width = 30
+                ws_layers.column_dimensions['B'].width = 10
+                ws_layers.column_dimensions['C'].width = 10
+                ws_layers.column_dimensions['D'].width = 10
+                ws_layers.column_dimensions['E'].width = 12
+                ws_layers.column_dimensions['F'].width = 12
+            
+            # 工作表3: 实体明细
+            if info_type in ("all", "entities"):
+                ws_entities = wb.create_sheet("实体明细")
+                
+                # 表头
+                headers = ["序号", "实体类型", "所属图层", "句柄"]
+                ws_entities.append(headers)
+                
+                # 设置表头样式
+                for col_idx, header in enumerate(headers, 1):
+                    cell = ws_entities.cell(row=1, column=col_idx)
+                    cell.font = header_font_white
+                    cell.fill = header_fill
+                    cell.alignment = center_align
+                
+                # 添加数据
+                entities = drawing_info.get("entities", [])
+                for idx, entity in enumerate(entities, 1):
+                    ws_entities.append([
+                        idx,
+                        entity["type"],
+                        entity["layer"],
+                        entity["handle"]
+                    ])
+                
+                # 调整列宽
+                ws_entities.column_dimensions['A'].width = 10
+                ws_entities.column_dimensions['B'].width = 20
+                ws_entities.column_dimensions['C'].width = 30
+                ws_entities.column_dimensions['D'].width = 20
+            
+            # 保存文件
+            wb.save(filepath)
+            logger.info(f"已导出图纸信息到: {filepath}")
+            
+            return {
+                "success": True,
+                "message": f"已成功导出到: {filepath}",
+                "filepath": filepath
+            }
+            
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"导出Excel失败: {err}")
+            return {"success": False, "message": f"导出失败: {err}"}
