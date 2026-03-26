@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import json
+import re
 
 from core.intent_router import detect_intent
 from connectors.kb_sqlserver.retriever import KBRetriever
@@ -304,18 +305,127 @@ class Orchestrator:
             },
         }
 
+    def _collect_drawing_context(self, user_text: str) -> Dict[str, Any]:
+        """从自然语言中提取上下文约束，支撑复杂图形/建筑绘制。"""
+        text = (user_text or "").strip()
+        lower = text.lower()
+
+        intent_markers = {
+            "building": ["建筑", "楼", "房", "立面", "平面图", "结构"],
+            "mechanical": ["机械", "轴", "孔", "法兰", "零件"],
+            "symbol": ["logo", "标志", "国旗", "图标", "纹样"],
+        }
+        domain = "general"
+        for k, ws in intent_markers.items():
+            if any(w in lower for w in ws):
+                domain = k
+                break
+
+        style = "2d_plan"
+        if any(w in lower for w in ["立面", "正视", "侧视"]):
+            style = "2d_elevation"
+        elif any(w in lower for w in ["三维", "3d", "立体"]):
+            style = "3d_like"
+
+        scale = "unknown"
+        if any(w in lower for w in ["米", "m", "层高", "建筑"]):
+            scale = "architectural"
+        elif any(w in lower for w in ["mm", "毫米", "公差"]):
+            scale = "mechanical"
+
+        must_constraints = []
+        if any(w in lower for w in ["对称", "中心对齐"]):
+            must_constraints.append("symmetry")
+        if any(w in lower for w in ["比例", "按比例"]):
+            must_constraints.append("proportion")
+        if any(w in lower for w in ["尺寸", "标注", "层高"]):
+            must_constraints.append("dimensioning")
+        if any(w in lower for w in ["不要重叠", "避免重叠"]):
+            must_constraints.append("no_overlap")
+
+        numbers = re.findall(r"\d+(?:\.\d+)?", text)
+
+        return {
+            "domain": domain,
+            "drawing_style": style,
+            "scale_hint": scale,
+            "must_constraints": must_constraints,
+            "number_tokens": numbers[:20],
+            "raw_text": text,
+        }
+
+    def _refine_requirements(self, user_text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """需求完善层：把模糊需求补全为可执行规格。"""
+        c = context or {}
+        refined = {
+            "goal": (user_text or "").strip(),
+            "domain": c.get("domain", "general"),
+            "drawing_style": c.get("drawing_style", "2d_plan"),
+            "scale_hint": c.get("scale_hint", "unknown"),
+            "must_constraints": list(c.get("must_constraints") or []),
+            "assumptions": [],
+        }
+
+        if "dimensioning" not in refined["must_constraints"]:
+            refined["must_constraints"].append("dimensioning")
+            refined["assumptions"].append("默认补充关键尺寸标注")
+
+        if "no_overlap" not in refined["must_constraints"]:
+            refined["must_constraints"].append("no_overlap")
+            refined["assumptions"].append("默认做组件间隔与冲突规避")
+
+        if refined["domain"] == "building":
+            refined["assumptions"].append("默认先主体轴线与外轮廓，再门窗与细部")
+        elif refined["domain"] == "mechanical":
+            refined["assumptions"].append("默认先基准几何，再孔位与倒角圆角")
+        else:
+            refined["assumptions"].append("默认先主轮廓，再子图元与标注")
+
+        return refined
+
+    def _build_hierarchical_plan(self, requirement: Dict[str, Any]) -> Dict[str, Any]:
+        """层级规划：将复杂图形拆解为阶段与子任务。"""
+        domain = requirement.get("domain", "general")
+
+        phases: List[Dict[str, Any]] = [
+            {"phase": 1, "name": "coordinate_setup", "tasks": ["定义原点", "设定基准方向", "设定单位与尺度"]},
+            {"phase": 2, "name": "primary_structure", "tasks": ["绘制主轮廓", "建立分区/层级"]},
+            {"phase": 3, "name": "secondary_components", "tasks": ["补充内部结构", "放置重复构件"]},
+            {"phase": 4, "name": "annotation_and_validation", "tasks": ["关键尺寸标注", "几何冲突检查", "可执行性检查"]},
+        ]
+
+        if domain == "building":
+            phases[1]["tasks"] = ["绘制建筑外轮廓", "建立轴线网格", "定义层高分割"]
+            phases[2]["tasks"] = ["门窗与立面分格", "楼梯/阳台等构件", "重复楼层阵列"]
+        elif domain == "mechanical":
+            phases[1]["tasks"] = ["基准外形", "基准圆/轴", "关键参考线"]
+            phases[2]["tasks"] = ["孔槽细节", "阵列复制", "圆角倒角"]
+
+        return {
+            "strategy": "hierarchical_decomposition",
+            "phases": phases,
+            "success_criteria": ["命令可执行", "图元不重叠", "结构层次清晰", "关键尺寸可读"],
+        }
+
     def _analyze_cad_drawing(self, user_text: str) -> Dict[str, Any]:
         """分析CAD绘图需求，生成结构化绘图计划"""
         if not self.ai_model:
             return {"error": "AI模型未配置"}
 
         try:
+            context_pack = self._collect_drawing_context(user_text)
+            refined_requirement = self._refine_requirements(user_text, context_pack)
+            hierarchical_plan = self._build_hierarchical_plan(refined_requirement)
+
             # 使用分析prompt生成绘图计划
             analysis_prompt = CAD_ANALYSIS_PROMPT.format(user_input=user_text)
             analysis_result = self.ai_model.generate_with_context(analysis_prompt)
 
             # 解析JSON结果
             analysis_data = json.loads(analysis_result.strip())
+            analysis_data["context_pack"] = context_pack
+            analysis_data["refined_requirement"] = refined_requirement
+            analysis_data["hierarchical_plan"] = hierarchical_plan
 
             return {
                 "success": True,
@@ -370,6 +480,33 @@ class Orchestrator:
         analysis_data = analysis.get("analysis", {})
         user_input = analysis.get("user_input", "")
 
+        def _extract_drawing_commands(raw_text: str) -> List[Dict[str, Any]]:
+            raw_text = (raw_text or "").strip()
+            if not raw_text:
+                return []
+            try:
+                data = json.loads(raw_text)
+            except Exception:
+                # 容错：模型如果夹杂少量文本，仍尽量提取最外层 JSON 对象
+                m = re.search(r"\{[\s\S]*\}", raw_text)
+                if not m:
+                    return []
+                try:
+                    data = json.loads(m.group(0))
+                except Exception:
+                    return []
+
+            if isinstance(data, dict) and isinstance(data.get("drawing_commands"), list):
+                return data.get("drawing_commands", [])
+            return []
+
+        def _needs_star_fix(text: str, commands: List[Dict[str, Any]]) -> bool:
+            t = (text or "").lower()
+            need = any(k in t for k in ["国旗", "旗帜", "旗", "星", "五角星", "star", "pentagram"])
+            if not need:
+                return False
+            return not any(isinstance(c, dict) and str(c.get("type", "")).lower() == "star" for c in commands)
+
         drawing_prompt = f"""你是AutoCAD绘图命令生成器。请基于分析结果输出结构化绘图JSON。
 
 分析结果：{json.dumps(analysis_data, ensure_ascii=False)}
@@ -385,15 +522,36 @@ class Orchestrator:
    - polyline: {{"type":"polyline","points":[[x1,y1],[x2,y2],...],"closed":true|false}}
    - arc: {{"type":"arc","center":[x,y,0],"radius":r,"start_angle":a,"end_angle":b}}
    - text: {{"type":"text","content":"文字","position":[x,y,0],"height":h}}
-4) 对复杂图形进行拆解，避免重叠，优先使用正坐标
-5) 不要输出解释文本
+   - star: {{"type":"star","center":[x,y,0],"outer_radius":r1,"inner_radius":r2,"points":p,"start_angle":a}}
+4) 复杂图形拆解规则：先主体轮廓，再内部结构，再标注文本；每一步都生成独立命令
+5) 坐标规则：优先正坐标；相邻组件至少间隔10；避免“互相完全重合”。允许“底图容器包含子图元”（例如星在旗帜矩形内部）
+6) 数值规则：radius>0；rectangle 的 corner1 必须是左下点，corner2 必须是右上点
+7) 多段线规则：points 至少2个点；如用于闭合轮廓，closed=true
+8) 星形规则：如果用户描述了星/五角星/国旗/旗帜中的星，星形必须用 type='star' 输出（不要用 polygon(sides=5) 近似）
+9) 不要输出解释文本，不要Markdown，不要代码块
 """
 
         try:
             raw = self.ai_model.generate_with_context(drawing_prompt)
-            data = json.loads(raw.strip())
-            if isinstance(data, dict) and isinstance(data.get("drawing_commands"), list):
-                return data.get("drawing_commands", [])
+            commands = _extract_drawing_commands(raw)
+
+            # 针对“星形语义”做一次强制重试（避免把星画成五边形）
+            if _needs_star_fix(user_input, commands):
+                retry_prompt = drawing_prompt + "\n强制要求：星形符号必须输出 type='star'，并确保 points=5（五角星）或与用户描述一致；禁止使用 polygon 来当星形。"
+                raw2 = self.ai_model.generate_with_context(retry_prompt)
+                commands = _extract_drawing_commands(raw2) or commands
+
+            # 结构化校验：过滤掉不符合 schema 的命令，减少后续执行异常
+            from core.drawing_parser import DrawingCommandParser
+            validator = DrawingCommandParser()
+            validated = []
+            for cmd in commands:
+                if not isinstance(cmd, dict):
+                    continue
+                v = validator._validate_command(cmd)
+                if v:
+                    validated.append(v)
+            return validated
         except Exception as e:
             print(f"[Orchestrator] 结构化绘图命令生成失败: {e}")
         return []
@@ -654,18 +812,38 @@ class Orchestrator:
             if analysis.get("success"):
                 analysis_data = analysis.get("analysis", {})
                 drawing_commands = self._generate_structured_drawing_commands(analysis)
-                # 兼容保留：必要时仍可回退命令行模式
-                commands = self._generate_cad_commands_from_analysis(analysis) if not drawing_commands else []
+
+                # 执行前校验与回退环：复杂图形优先结构化命令，失败再降级
+                from core.drawing_parser import DrawingCommandParser
+                validator = DrawingCommandParser()
+                validated_commands = []
+                for cmd in drawing_commands:
+                    v = validator._validate_command(cmd) if isinstance(cmd, dict) else None
+                    if v:
+                        validated_commands.append(v)
+
+                # 若结构化命令为空，自动回退传统命令生成
+                commands = []
+                if not validated_commands:
+                    commands = self._generate_cad_commands_from_analysis(analysis)
+
+                context_pack = analysis_data.get("context_pack", {})
+                refined_requirement = analysis_data.get("refined_requirement", {})
+                hierarchical_plan = analysis_data.get("hierarchical_plan", {})
 
                 response = f"已分析绘图需求：{analysis_data.get('drawing_type', '未知')}类型，复杂度{analysis_data.get('complexity', '未知')}，预计{analysis_data.get('estimated_commands', 0)}个步骤。"
                 response += f"\n布局策略：{analysis_data.get('layout_strategy', '标准布局')}"
+                response += f"\n规划策略：{hierarchical_plan.get('strategy', 'standard')}"
+                response += f"\n上下文识别：领域={context_pack.get('domain', 'general')}，风格={context_pack.get('drawing_style', '2d_plan')}"
+                if refined_requirement.get("assumptions"):
+                    response += "\n需求完善：" + "；".join(refined_requirement.get("assumptions", [])[:3])
 
                 return {
                     "intent": "command_proxy",
                     "route": "cad",
                     "response": response,
                     "commands": commands,
-                    "drawing_commands": drawing_commands,
+                    "drawing_commands": validated_commands,
                     "drawing_analysis": analysis_data
                 }
             else:

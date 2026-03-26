@@ -6,6 +6,7 @@ AutoCAD控制核心模块
 import win32com.client
 import pythoncom
 import time
+import math
 from typing import Optional, List
 import logging
 
@@ -606,6 +607,64 @@ class AutoCADController:
             logger.error(f"绘制多边形失败: {err}")
             return {"success": False, "message": f"绘制多边形失败: {err}"}
 
+    def draw_star(
+        self,
+        center: tuple,
+        outer_radius: float,
+        inner_radius: float,
+        points: int = 5,
+        start_angle: float = 0.0,
+        layer: str = None,
+    ) -> dict:
+        """
+        绘制星形（用多段线 polyline 生成交替外/内半径顶点）。
+        
+        start_angle 使用弧度(rad)，points 表示星的尖数（例如国旗五角星=5）。
+        """
+        if not self.ensure_document():
+            return {"success": False, "message": "未连接到AutoCAD或无活动文档"}
+
+        try:
+            if points < 3:
+                return {"success": False, "message": "星形 points 必须 >= 3"}
+
+            # 只使用 x/y 做 2D 星形；z 由 _make_point 决定
+            cx = float(center[0]) if len(center) >= 1 else 0.0
+            cy = float(center[1]) if len(center) >= 2 else 0.0
+            r_out = float(outer_radius)
+            r_in = float(inner_radius)
+            a0 = float(start_angle)
+
+            # 2*points 个顶点：外-内-外-内...
+            # 每个相邻顶点夹角为 pi / points
+            step = math.pi / float(points)
+            pts = []
+            for k in range(points * 2):
+                ang = a0 + k * step
+                r = r_out if (k % 2 == 0) else r_in
+                x = cx + r * math.cos(ang)
+                y = cy + r * math.sin(ang)
+                pts.append((x, y))
+
+            # 绘制 closed polyline 来表示星形
+            point_array = self._make_point_2d(pts)
+            pline = self.acad_doc.ModelSpace.AddLightweightPolyline(point_array)
+            pline.Closed = True
+
+            if layer:
+                try:
+                    pline.Layer = layer
+                except Exception:
+                    pass
+
+            logger.info(f"已绘制星形: points={points}, outer={outer_radius}, inner={inner_radius}")
+            return {"success": True, "message": "星形已绘制", "entity": pline}
+
+        except Exception as e:
+            err = _format_com_error(e)
+            logger.error(f"绘制星形失败: {err}")
+            return {"success": False, "message": f"绘制星形失败: {err}"}
+
     def set_layer(self, layer_name: str, create_if_not_exists: bool = True) -> dict:
         """
         设置当前图层
@@ -792,6 +851,17 @@ class AutoCADController:
                         cmd.get("layer")
                     )
                     result["type"] = "polygon"
+                    
+                elif cmd_type == "star":
+                    result = self.draw_star(
+                        cmd.get("center", (0, 0)),
+                        cmd.get("outer_radius", 10),
+                        cmd.get("inner_radius", 5),
+                        cmd.get("points", 5),
+                        cmd.get("start_angle", 0.0),
+                        cmd.get("layer"),
+                    )
+                    result["type"] = "star"
                     
                 else:
                     result = {"success": False, "message": f"未知的绘图类型: {cmd_type}", "type": cmd_type}

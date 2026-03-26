@@ -354,6 +354,9 @@ class LMStudioModel(AIModel):
 2. 绘图需求必须返回 intent="drawing" 和 drawing_commands 数组
 3. 只输出纯JSON，不要任何解释或额外内容
 4. 一个请求可以返回多个绘图命令，按顺序执行
+5. 对复杂图形先做“需求完善”：补充默认约束（尺寸、对齐、不重叠、分层）后再出命令
+6. 对复杂建筑/复杂图案采用“分层分阶段”输出：主体轮廓 -> 结构分区 -> 细节构件 -> 标注
+7. 优先输出可组合、可校验的小步骤命令，避免一次性巨型命令
 
 ## ⚠️ 坐标系统规则（非常重要）
 - 原点(0,0)在左下角
@@ -682,11 +685,32 @@ class LMStudioModel(AIModel):
 
             # 2. 普通消息处理
             if isinstance(message, dict):
-                assistant_message = message.get("content", "")
+                assistant_message = message.get("content")
             elif isinstance(message, str):
                 assistant_message = message
             else:
-                assistant_message = str(choice.get("content", ""))
+                assistant_message = choice.get("content")
+
+            # 兼容：content 为 None 或空时，尝试拼接多段/工具输出
+            if assistant_message is None:
+                assistant_message = ""
+
+            if isinstance(assistant_message, list):
+                # 兼容部分模型返回分片列表
+                joined = []
+                for item in assistant_message:
+                    if isinstance(item, dict):
+                        seg = item.get("text") or item.get("content") or ""
+                        joined.append(str(seg))
+                    else:
+                        joined.append(str(item))
+                assistant_message = "".join(joined).strip()
+            else:
+                assistant_message = str(assistant_message).strip()
+
+            # 兜底：若仍为空，尝试从 choice 里找文本字段
+            if not assistant_message:
+                assistant_message = str(choice.get("text") or "").strip()
 
             # 2.1 尝试解析自定义格式的工具调用（部分模型可能输出 JSON 格式的工具调用）
             if assistant_message:

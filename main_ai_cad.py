@@ -92,7 +92,6 @@ class StatusIndicator(QWidget):
             painter.setBrush(QBrush(gradient))
             painter.setPen(QPen(QColor(150, 30, 30), 1))
             painter.drawEllipse(2, 2, 12, 12)
-
 class AICADPlugin(QMainWindow):
     """AI CAD插件主窗口"""
 
@@ -1297,6 +1296,695 @@ class AICADPlugin(QMainWindow):
         cleaned = "\n".join(kept).strip()
         return cleaned if cleaned else text
 
+    def _sanitize_history_content(self, text: str, max_len: int = 1200) -> str:
+        """清洗写入会话历史的文本，避免把系统提示词/超长脏数据带入下一轮。"""
+        t = self.clean_ai_response(text)
+        if not t:
+            return ""
+
+        # 移除疑似系统提示词片段
+        bad_markers = [
+            "你是autocad智能绘图助手", "## 重要提醒", "输出：{\"intent\"", "可用工具：", "系统prompt", "json格式："
+        ]
+        tl = t.lower()
+        for m in bad_markers:
+            idx = tl.find(m.lower())
+            if idx >= 0:
+                t = t[:idx].strip()
+                tl = t.lower()
+
+        # 兜底：如果仍是超长文本，截断
+        if len(t) > max_len:
+            t = t[:max_len].rstrip() + "…"
+
+        return t
+
+    def _to_num(self, v, default=0.0):
+        """鲁棒数值转换：允许嵌套list/tuple，避免 float(list) 异常。"""
+        try:
+            cur = v
+            depth = 0
+            while isinstance(cur, (list, tuple)) and cur and depth < 4:
+                cur = cur[0]
+                depth += 1
+            return float(cur)
+        except Exception:
+            return float(default)
+
+    def _to_xy(self, p, default=(0.0, 0.0)):
+        if not isinstance(p, (list, tuple)):
+            return float(default[0]), float(default[1])
+        if len(p) < 2:
+            return float(default[0]), float(default[1])
+        return self._to_num(p[0], default[0]), self._to_num(p[1], default[1])
+
+    def _normalize_points(self, pts):
+        norm = []
+        for p in (pts or []):
+            x, y = self._to_xy(p, (0.0, 0.0))
+            norm.append((x, y))
+        return norm
+
+    def _semantic_quality_check(self, user_text: str, drawing_commands) -> tuple[bool, str]:
+        """语义质量门：检查图形是否符合用户对象语义（轻量规则，不写死具体图形参数）。"""
+        t = (user_text or "").lower()
+        cmds = [c for c in (drawing_commands or []) if isinstance(c, dict)]
+        if not cmds:
+            return False, "未生成有效绘图命令"
+
+        types = [str(c.get("type", "")).lower() for c in cmds]
+
+        # 椅子：至少应具备座面+靠背语义（通常需要纵向构件，不应仅是桌面+四角块）
+        if any(k in t for k in ["椅子", "chair"]):
+            rects = [c for c in cmds if str(c.get("type", "")).lower() == "rectangle"]
+            lines = [c for c in cmds if str(c.get("type", "")).lower() == "line"]
+            polys = [c for c in cmds if str(c.get("type", "")).lower() in {"polyline", "polygon"}]
+
+            # 纯5个矩形且无其他构件，极大概率是错误“桌子模板”
+            if len(rects) >= 5 and len(lines) == 0 and len(polys) == 0:
+                # 检查是否只有1个大矩形+4个角矩形
+                def _area(r):
+                    c1 = r.get("corner1", (0, 0))
+                    c2 = r.get("corner2", (0, 0))
+                    x1, y1 = self._to_xy(c1, (0.0, 0.0))
+                    x2, y2 = self._to_xy(c2, (0.0, 0.0))
+                    return abs((x2 - x1) * (y2 - y1))
+                areas = sorted([_area(r) for r in rects], reverse=True)
+                if len(areas) >= 5 and areas[0] > (areas[1] * 6):
+                    return False, "语义不匹配：当前结果更像桌子，不像椅子（缺少靠背/座面层次）"
+
+        return True, "ok"
+
+    def _normalize_drawing_commands(self, drawing_commands):
+        """执行前标准化绘图命令，降低复杂图形失败率。"""
+        parser = DrawingCommandParser()
+        normalized = []
+
+        for cmd in (drawing_commands or []):
+            validated = parser._validate_command(cmd) if isinstance(cmd, dict) else None
+            if not validated:
+                continue
+
+            t = validated.get("type")
+            if t == "rectangle":
+                c1 = list(validated.get("corner1", (0, 0)))
+                c2 = list(validated.get("corner2", (100, 80)))
+                x1, y1 = self._to_xy(c1, (0.0, 0.0))
+                x2, y2 = self._to_xy(c2, (100.0, 80.0))
+                validated["corner1"] = (min(x1, x2), min(y1, y2))
+                validated["corner2"] = (max(x1, x2), max(y1, y2))
+
+            elif t == "line":
+                s = validated.get("start", (0, 0))
+                e = validated.get("end", (100, 0))
+                sx, sy = self._to_xy(s, (0.0, 0.0))
+                ex, ey = self._to_xy(e, (100.0, 0.0))
+                validated["start"] = (sx, sy, 0)
+                validated["end"] = (ex, ey, 0)
+
+            elif t == "circle":
+                c = validated.get("center", (0, 0))
+                cx, cy = self._to_xy(c, (0.0, 0.0))
+                validated["center"] = (cx, cy, 0)
+                validated["radius"] = max(0.1, self._to_num(validated.get("radius", 10), 10.0))
+
+            elif t == "polyline":
+                pts = self._normalize_points(validated.get("points", []))
+                if len(pts) >= 2:
+                    dedup = [pts[0]]
+                    for p in pts[1:]:
+                        if tuple(p) != tuple(dedup[-1]):
+                            dedup.append(p)
+                    if len(dedup) >= 2:
+                        validated["points"] = dedup
+
+            normalized.append(validated)
+
+        return normalized
+
+    def _sanitize_drawing_commands(self, drawing_commands, max_commands=80):
+        """清洗绘图命令：去重、裁剪异常重复，避免复杂场景爆量命令。"""
+        sanitized = []
+        seen = set()
+
+        def _key(cmd):
+            try:
+                t = cmd.get("type", "")
+                if t == "line":
+                    s = cmd.get("start", (0, 0, 0))
+                    e = cmd.get("end", (0, 0, 0))
+                    sx, sy = self._to_xy(s, (0.0, 0.0))
+                    ex, ey = self._to_xy(e, (0.0, 0.0))
+                    return ("line", round(sx, 3), round(sy, 3), round(ex, 3), round(ey, 3))
+                if t == "rectangle":
+                    c1 = cmd.get("corner1", (0, 0))
+                    c2 = cmd.get("corner2", (0, 0))
+                    x1, y1 = self._to_xy(c1, (0.0, 0.0))
+                    x2, y2 = self._to_xy(c2, (0.0, 0.0))
+                    return ("rectangle", round(x1, 3), round(y1, 3), round(x2, 3), round(y2, 3))
+                if t == "circle":
+                    c = cmd.get("center", (0, 0, 0))
+                    r = self._to_num(cmd.get("radius", 0), 0.0)
+                    cx, cy = self._to_xy(c, (0.0, 0.0))
+                    return ("circle", round(cx, 3), round(cy, 3), round(r, 3))
+                if t == "polyline":
+                    pts = tuple((round(self._to_num(p[0], 0.0), 3), round(self._to_num(p[1], 0.0), 3)) for p in cmd.get("points", []) if isinstance(p, (list, tuple)) and len(p) >= 2)
+                    return ("polyline", pts, bool(cmd.get("closed", False)))
+                return (t, str(cmd))
+            except Exception:
+                return ("unknown", str(cmd))
+
+        for cmd in (drawing_commands or []):
+            if not isinstance(cmd, dict):
+                continue
+            t = str(cmd.get("type", "")).lower()
+            if t not in {"line", "circle", "rectangle", "polyline", "arc", "text", "star", "polygon"}:
+                continue
+
+            # 防御：超大多段线点数裁剪，避免复杂图形异常输出拖垮执行
+            if t == "polyline":
+                pts = cmd.get("points", []) or []
+                if len(pts) > 300:
+                    cmd = dict(cmd)
+                    cmd["points"] = pts[:300]
+
+            k = _key(cmd)
+            if k in seen:
+                continue
+            seen.add(k)
+            sanitized.append(cmd)
+            if len(sanitized) >= max_commands:
+                break
+
+        return sanitized
+
+    def _try_recover_drawing_from_text(self, response_text: str):
+        """当模型把绘图JSON塞进response文本时，尝试恢复 drawing_commands。"""
+        txt = (response_text or "").strip()
+        if not txt or "drawing_commands" not in txt:
+            return None
+
+        parser = DrawingCommandParser()
+        parsed = parser.parse_ai_response(txt)
+        cmds = parsed.get("drawing_commands", []) if isinstance(parsed, dict) else []
+        if cmds:
+            return {
+                "intent": "drawing",
+                "response": parsed.get("response_text") or "已恢复绘图指令。",
+                "drawing_commands": cmds,
+            }
+
+        # 二次恢复：从损坏JSON中提取局部图元对象（circle/rectangle/line/polyline/text）
+        recovered_cmds = []
+        for pat in [
+            r'\{\s*"type"\s*:\s*"circle"[\s\S]*?\}',
+            r'\{\s*"type"\s*:\s*"rectangle"[\s\S]*?\}',
+            r'\{\s*"type"\s*:\s*"line"[\s\S]*?\}',
+            r'\{\s*"type"\s*:\s*"polyline"[\s\S]*?\}',
+            r'\{\s*"type"\s*:\s*"text"[\s\S]*?\}',
+        ]:
+            for m in re.finditer(pat, txt):
+                snippet = m.group(0)
+                try:
+                    obj = json.loads(snippet)
+                except Exception:
+                    continue
+                v = parser._validate_command(obj)
+                if v:
+                    recovered_cmds.append(v)
+                if len(recovered_cmds) >= 80:
+                    break
+            if len(recovered_cmds) >= 80:
+                break
+
+        if recovered_cmds:
+            # 去重
+            uniq = []
+            seen = set()
+            for c in recovered_cmds:
+                k = json.dumps(c, ensure_ascii=False, sort_keys=True)
+                if k in seen:
+                    continue
+                seen.add(k)
+                uniq.append(c)
+                if len(uniq) >= 80:
+                    break
+            return {
+                "intent": "drawing",
+                "response": "已从损坏响应中恢复部分可执行绘图命令。",
+                "drawing_commands": uniq,
+            }
+
+        # 中性回退：不写死任何图形模板，保持由大模型主导
+        # 若检测到绘图JSON痕迹但无法完整恢复，返回None让上层触发重试/再生成
+        tl = txt.lower()
+        if any(k in tl for k in ["drawing_commands", '"type"', '"circle"', '"rectangle"', '"polyline"']):
+            return None
+
+        return None
+
+    def _retry_failed_drawing_commands(self, drawing_commands, draw_result):
+        """对失败命令做一次轻量修复重试。"""
+        failed_cmds = []
+        results = (draw_result or {}).get("results", [])
+        for idx, r in enumerate(results):
+            if not r.get("success") and idx < len(drawing_commands):
+                failed_cmds.append(drawing_commands[idx])
+
+        if not failed_cmds:
+            return None
+
+        repaired = []
+        for cmd in failed_cmds:
+            c = dict(cmd)
+            t = c.get("type")
+            # 圆/矩形/线 常见失败修复：整体平移，规避重叠与非法点
+            if t == "circle":
+                center = list(c.get("center", (0, 0, 0)))
+                cx, cy = self._to_xy(center, (0.0, 0.0))
+                c["center"] = [cx + 20, cy + 20, 0]
+            elif t == "rectangle":
+                c1 = list(c.get("corner1", (0, 0)))
+                c2 = list(c.get("corner2", (100, 80)))
+                x1, y1 = self._to_xy(c1, (0.0, 0.0))
+                x2, y2 = self._to_xy(c2, (100.0, 80.0))
+                c["corner1"] = [x1 + 20, y1 + 20]
+                c["corner2"] = [x2 + 20, y2 + 20]
+            elif t == "line":
+                s = list(c.get("start", (0, 0, 0)))
+                e = list(c.get("end", (100, 0, 0)))
+                sx, sy = self._to_xy(s, (0.0, 0.0))
+                ex, ey = self._to_xy(e, (100.0, 0.0))
+                c["start"] = [sx + 20, sy + 20, 0]
+                c["end"] = [ex + 20, ey + 20, 0]
+            repaired.append(c)
+
+        if not repaired:
+            return None
+        return self.acad.execute_drawing_commands(repaired)
+
+    def _bbox_of_command(self, cmd):
+        """计算命令的2D包围盒: (minx, miny, maxx, maxy)。"""
+        t = (cmd or {}).get("type", "")
+        try:
+            if t == "rectangle":
+                c1 = cmd.get("corner1", (0, 0))
+                c2 = cmd.get("corner2", (0, 0))
+                x1, y1 = self._to_xy(c1, (0.0, 0.0))
+                x2, y2 = self._to_xy(c2, (0.0, 0.0))
+                return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+            if t == "circle":
+                c = cmd.get("center", (0, 0, 0))
+                r = max(0.0, self._to_num(cmd.get("radius", 0), 0.0))
+                x, y = self._to_xy(c, (0.0, 0.0))
+                return (x - r, y - r, x + r, y + r)
+            if t == "line":
+                s = cmd.get("start", (0, 0, 0))
+                e = cmd.get("end", (0, 0, 0))
+                x1, y1 = self._to_xy(s, (0.0, 0.0))
+                x2, y2 = self._to_xy(e, (0.0, 0.0))
+                return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+            if t == "polyline":
+                pts = cmd.get("points", [])
+                if len(pts) >= 2:
+                    norm = self._normalize_points(pts)
+                    xs = [p[0] for p in norm]
+                    ys = [p[1] for p in norm]
+                    return (min(xs), min(ys), max(xs), max(ys))
+            if t == "star":
+                c = cmd.get("center", (0, 0, 0))
+                r_out = max(0.0, self._to_num(cmd.get("outer_radius", 0), 0.0))
+                x, y = self._to_xy(c, (0.0, 0.0))
+                return (x - r_out, y - r_out, x + r_out, y + r_out)
+        except Exception:
+            return None
+        return None
+
+    def _bbox_overlap(self, a, b):
+        if not a or not b:
+            return False
+        return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])
+
+    def _bbox_contains(self, outer, inner, eps: float = 1e-6) -> bool:
+        """判断 inner 是否被 outer 完全包含（用于排除容器-子图元避让）。"""
+        if not outer or not inner:
+            return False
+        return (
+            outer[0] <= inner[0] + eps and
+            outer[1] <= inner[1] + eps and
+            outer[2] >= inner[2] - eps and
+            outer[3] >= inner[3] - eps
+        )
+
+    def _detect_geometry_conflicts(self, commands):
+        """检测命令间几何冲突（包围盒重叠），返回冲突对索引列表。"""
+        bboxes = [self._bbox_of_command(c) for c in (commands or [])]
+        conflicts = []
+        for i in range(len(bboxes)):
+            if bboxes[i] is None:
+                continue
+            for j in range(i + 1, len(bboxes)):
+                if bboxes[j] is None:
+                    continue
+                if self._bbox_overlap(bboxes[i], bboxes[j]):
+                    # 忽略容器-子图元关系：例如“背景矩形里有线/星”，不应把子图元顶出。
+                    if self._bbox_contains(bboxes[i], bboxes[j]) or self._bbox_contains(bboxes[j], bboxes[i]):
+                        continue
+                    conflicts.append((i, j))
+        return conflicts
+
+    def _translate_command(self, cmd, dx, dy):
+        c = dict(cmd or {})
+        t = c.get("type", "")
+        try:
+            if t == "rectangle":
+                c1 = list(c.get("corner1", (0, 0)))
+                c2 = list(c.get("corner2", (0, 0)))
+                c["corner1"] = [float(c1[0]) + dx, float(c1[1]) + dy]
+                c["corner2"] = [float(c2[0]) + dx, float(c2[1]) + dy]
+            elif t == "circle":
+                center = list(c.get("center", (0, 0, 0)))
+                if len(center) < 3:
+                    center = [center[0], center[1], 0]
+                center[0] = float(center[0]) + dx
+                center[1] = float(center[1]) + dy
+                c["center"] = center
+            elif t == "line":
+                s = list(c.get("start", (0, 0, 0)))
+                e = list(c.get("end", (0, 0, 0)))
+                if len(s) < 3:
+                    s = [s[0], s[1], 0]
+                if len(e) < 3:
+                    e = [e[0], e[1], 0]
+                s[0] = float(s[0]) + dx; s[1] = float(s[1]) + dy
+                e[0] = float(e[0]) + dx; e[1] = float(e[1]) + dy
+                c["start"] = s
+                c["end"] = e
+            elif t == "polyline":
+                pts = c.get("points", [])
+                c["points"] = [[float(p[0]) + dx, float(p[1]) + dy] for p in pts]
+            elif t == "star":
+                center = list(c.get("center", (0, 0, 0)))
+                if len(center) < 2:
+                    center = [0, 0, 0]
+                if len(center) < 3:
+                    center = [center[0], center[1], 0]
+                center[0] = float(center[0]) + dx
+                center[1] = float(center[1]) + dy
+                c["center"] = center
+        except Exception:
+            return c
+        return c
+
+    def _apply_auto_layout(self, commands, spacing=20.0):
+        """自动布局：检测冲突并对后续图形做平移避让。"""
+        laid_out = [dict(c) for c in (commands or [])]
+        moved = 0
+        max_iter = 6
+
+        for _ in range(max_iter):
+            conflicts = self._detect_geometry_conflicts(laid_out)
+            if not conflicts:
+                break
+
+            changed = False
+            for i, j in conflicts:
+                bi = self._bbox_of_command(laid_out[i])
+                bj = self._bbox_of_command(laid_out[j])
+                if not bi or not bj:
+                    continue
+                width_j = max(1.0, bj[2] - bj[0])
+                height_j = max(1.0, bj[3] - bj[1])
+
+                # 优先向右避让，若x方向空间不足则向上避让
+                dx = (bi[2] - bj[0]) + spacing
+                dy = 0.0
+                if dx < spacing:
+                    dx = width_j + spacing
+                if dx > width_j * 4:
+                    dx = 0.0
+                    dy = (bi[3] - bj[1]) + spacing
+                    if dy < spacing:
+                        dy = height_j + spacing
+
+                laid_out[j] = self._translate_command(laid_out[j], dx, dy)
+                moved += 1
+                changed = True
+
+            if not changed:
+                break
+
+        remain = self._detect_geometry_conflicts(laid_out)
+        if remain:
+            laid_out, grid_moved = self._apply_grid_layout_fallback(laid_out, spacing=spacing)
+            moved += grid_moved
+            remain = self._detect_geometry_conflicts(laid_out)
+
+        return laid_out, moved, remain
+
+    def _apply_grid_layout_fallback(self, commands, spacing=20.0):
+        """网格回退布局：对仍冲突的图元强制排列到网格位。"""
+        arranged = [dict(c) for c in (commands or [])]
+        if len(arranged) <= 1:
+            return arranged, 0
+
+        bboxes = [self._bbox_of_command(c) for c in arranged]
+        valid = [b for b in bboxes if b]
+        if not valid:
+            return arranged, 0
+
+        avg_w = sum((b[2] - b[0]) for b in valid) / len(valid)
+        avg_h = sum((b[3] - b[1]) for b in valid) / len(valid)
+        cell_w = max(20.0, avg_w + spacing)
+        cell_h = max(20.0, avg_h + spacing)
+
+        moved = 0
+        cols = max(2, int(len(arranged) ** 0.5) + 1)
+        origin_x, origin_y = 0.0, 0.0
+
+        for idx, cmd in enumerate(arranged):
+            bb = self._bbox_of_command(cmd)
+            if not bb:
+                continue
+            row = idx // cols
+            col = idx % cols
+            target_min_x = origin_x + col * cell_w
+            target_min_y = origin_y + row * cell_h
+            dx = target_min_x - bb[0]
+            dy = target_min_y - bb[1]
+            if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                arranged[idx] = self._translate_command(cmd, dx, dy)
+                moved += 1
+
+        return arranged, moved
+
+    def _extract_layout_intent(self, user_text: str):
+        """从用户语句中提取布局意图。"""
+        t = (user_text or "").lower()
+        if not t:
+            return "none"
+        if "居中" in t or "中心对齐" in t:
+            return "center"
+        if "一行" in t or "横向" in t or "从左到右" in t:
+            return "row"
+        if "一列" in t or "纵向" in t or "从上到下" in t:
+            return "column"
+        if "网格" in t or "矩阵" in t or "阵列" in t:
+            return "grid"
+        return "none"
+
+    def _should_skip_layout_adjustment(self, user_text: str, commands) -> bool:
+        """是否应跳过自动布局：尺寸/标注命令不应被平移打散。"""
+        t = (user_text or "").lower()
+        if any(k in t for k in ["标注", "尺寸", "dimension", "dim"]):
+            return True
+
+        cmds = [c for c in (commands or []) if isinstance(c, dict)]
+        if not cmds:
+            return False
+
+        types = [str(c.get("type", "")).lower() for c in cmds]
+        anno_count = sum(1 for tp in types if tp in {"text", "line"})
+        shape_count = sum(1 for tp in types if tp in {"rectangle", "circle", "polyline", "polygon", "star", "arc"})
+
+        # 以标注为主的命令集，保持原始坐标关系
+        if anno_count >= max(3, int(len(types) * 0.6)) and shape_count <= 1:
+            return True
+        return False
+
+    def _extract_layout_params(self, user_text: str):
+        """从用户语句中提取布局参数（行列数/间距，支持每行N个）。"""
+        import re
+        t = (user_text or "").lower()
+        params = {"rows": None, "cols": None, "spacing": None}
+
+        # 间距/距离（支持单位：m/cm/mm，默认按当前图纸单位）
+        spacing_match = re.search(r"(间距|间隔|距离)\s*([0-9]+\.?[0-9]*)\s*(m|cm|mm)?", t)
+        if spacing_match:
+            try:
+                v = float(spacing_match.group(2))
+                unit = spacing_match.group(3)
+                if unit == "m":
+                    v = v * 1000.0
+                elif unit == "cm":
+                    v = v * 10.0
+                params["spacing"] = max(1.0, v)
+            except Exception:
+                pass
+
+        # 3行4列 / 3x4 / 3×4
+        grid_match = re.search(r"(\d+)\s*(行|列|x|×)\s*(\d+)", t)
+        if grid_match:
+            a = int(grid_match.group(1))
+            b = int(grid_match.group(3))
+            if grid_match.group(2) in {"行", "x", "×"}:
+                params["rows"] = a
+                params["cols"] = b
+            else:
+                params["cols"] = a
+                params["rows"] = b
+
+        # 每行N个 / 每列N个
+        per_row = re.search(r"每\s*行\s*(\d+)\s*个", t)
+        per_col = re.search(r"每\s*列\s*(\d+)\s*个", t)
+        if per_row:
+            params["cols"] = int(per_row.group(1))
+        if per_col:
+            params["rows"] = int(per_col.group(1))
+
+        # 单独行/列数量
+        rows_match = re.search(r"(\d+)\s*行", t)
+        cols_match = re.search(r"(\d+)\s*列", t)
+        if rows_match:
+            params["rows"] = int(rows_match.group(1))
+        if cols_match:
+            params["cols"] = int(cols_match.group(1))
+
+        return params
+
+    def _apply_semantic_layout(self, commands, user_text: str, spacing=20.0):
+        """按语义布局意图预布局图元：row/column/grid/center。"""
+        mode = self._extract_layout_intent(user_text)
+        params = self._extract_layout_params(user_text)
+        arranged = [dict(c) for c in (commands or [])]
+        if mode == "none" or len(arranged) <= 1:
+            return arranged, "none"
+
+        bboxes = [self._bbox_of_command(c) for c in arranged]
+        valid = [b for b in bboxes if b]
+        if not valid:
+            return arranged, "none"
+
+        spacing = params.get("spacing") if params.get("spacing") is not None else spacing
+        avg_w = sum((b[2] - b[0]) for b in valid) / len(valid)
+        avg_h = sum((b[3] - b[1]) for b in valid) / len(valid)
+        step_x = max(20.0, avg_w + spacing)
+        step_y = max(20.0, avg_h + spacing)
+
+        if mode == "row":
+            for i, cmd in enumerate(arranged):
+                bb = self._bbox_of_command(cmd)
+                if not bb:
+                    continue
+                target_x = i * step_x
+                target_y = 0.0
+                arranged[i] = self._translate_command(cmd, target_x - bb[0], target_y - bb[1])
+            return arranged, "row"
+
+        if mode == "column":
+            for i, cmd in enumerate(arranged):
+                bb = self._bbox_of_command(cmd)
+                if not bb:
+                    continue
+                target_x = 0.0
+                target_y = i * step_y
+                arranged[i] = self._translate_command(cmd, target_x - bb[0], target_y - bb[1])
+            return arranged, "column"
+
+        if mode == "grid":
+            cols = params.get("cols") or max(2, int(len(arranged) ** 0.5) + 1)
+            rows = params.get("rows") or max(1, int((len(arranged) + cols - 1) / cols))
+
+            for i, cmd in enumerate(arranged):
+                bb = self._bbox_of_command(cmd)
+                if not bb:
+                    continue
+                row = i // cols
+                col = i % cols
+                target_x = col * step_x
+                target_y = row * step_y
+                arranged[i] = self._translate_command(cmd, target_x - bb[0], target_y - bb[1])
+
+            # 若用户指定了行列且目标格子大于图元数，保留前N个即可（由上游扩增控制数量）
+            max_cells = rows * cols
+            if max_cells > 0 and len(arranged) > max_cells:
+                arranged = arranged[:max_cells]
+
+            return arranged, "grid"
+
+        if mode == "center":
+            # 将整体包围盒平移到原点附近中心
+            minx = min(b[0] for b in valid)
+            miny = min(b[1] for b in valid)
+            maxx = max(b[2] for b in valid)
+            maxy = max(b[3] for b in valid)
+            cx = (minx + maxx) / 2.0
+            cy = (miny + maxy) / 2.0
+            dx = -cx
+            dy = -cy
+            arranged = [self._translate_command(c, dx, dy) for c in arranged]
+            return arranged, "center"
+
+        return arranged, "none"
+
+    def _extract_repeat_count(self, user_text: str):
+        """提取用户要求的图元数量，如“画12个圆/12件/12个图形”。"""
+        import re
+        t = (user_text or "").lower()
+        if not t:
+            return None
+
+        # 明确总数语义优先
+        patterns = [
+            r"共\s*(\d+)\s*(个|件|图形|图元)",
+            r"总共\s*(\d+)\s*(个|件|图形|图元)",
+            r"(\d+)\s*(个|件|图形|图元)"
+        ]
+        for p in patterns:
+            m = re.search(p, t)
+            if m:
+                try:
+                    n = int(m.group(1))
+                    if n > 0:
+                        return n
+                except Exception:
+                    return None
+
+        # 若给出行列，推导总数
+        params = self._extract_layout_params(user_text)
+        rows = params.get("rows")
+        cols = params.get("cols")
+        if rows and cols and rows > 0 and cols > 0:
+            return rows * cols
+
+        return None
+
+    def _expand_commands_by_count(self, commands, user_text: str):
+        """当用户指定数量且模型仅返回少量图元时，自动扩增图元。"""
+        target = self._extract_repeat_count(user_text)
+        source = [dict(c) for c in (commands or [])]
+        if not target or not source:
+            return source, 0
+        if len(source) >= target:
+            return source[:target], 0
+
+        expanded = list(source)
+        idx = 0
+        while len(expanded) < target:
+            expanded.append(dict(source[idx % len(source)]))
+            idx += 1
+        return expanded, (len(expanded) - len(source))
+
     def execute_tool(self, tool_name: str, arguments: Dict) -> Dict:
         """执行工具调用"""
         print(f"[Tool] 执行工具: {tool_name}, 参数: {arguments}")
@@ -1338,7 +2026,42 @@ class AICADPlugin(QMainWindow):
 
             response_text = result.get('response', '')
             intent = result.get('intent', 'chat')
-            
+
+            # 优先恢复：若AI把绘图JSON塞进文本，先恢复为结构化绘图，避免被当成普通聊天丢失
+            recovered = self._try_recover_drawing_from_text(response_text)
+            if recovered:
+                result = {**result, **recovered}
+                intent = result.get("intent", intent)
+                response_text = result.get("response", response_text)
+
+            # AI主导兜底：明确绘图意图但模型返回空/聊天时，自动触发一次纯绘图重试
+            if intent != "drawing" and self._is_operation_intent(self._last_user_input):
+                no_payload = (not result.get("drawing_commands")) and (not response_text)
+                looks_chat = intent == "chat"
+                if looks_chat or no_payload:
+                    try:
+                        force_prompt = (
+                            "用户请求是明确绘图操作。请只返回一个JSON对象："
+                            "{\"intent\":\"drawing\",\"response\":\"...\",\"drawing_commands\":[...]}。"
+                            "不要解释，不要markdown，不要代码块。\n"
+                            f"用户请求：{self._last_user_input}"
+                        )
+                        forced_text = self.ai_model.generate_with_context(force_prompt)
+                        parser = DrawingCommandParser()
+                        forced_parsed = parser.parse_ai_response(forced_text)
+                        forced_cmds = forced_parsed.get("drawing_commands", []) if isinstance(forced_parsed, dict) else []
+                        if forced_cmds:
+                            result = {
+                                **result,
+                                "intent": "drawing",
+                                "response": forced_parsed.get("response_text") or "已按模型重试生成绘图命令。",
+                                "drawing_commands": forced_cmds,
+                            }
+                            intent = "drawing"
+                            response_text = result.get("response", response_text)
+                    except Exception as _:
+                        pass
+
             # 【调试日志】打印 AI 返回的完整结果
             print(f"\n[DEBUG] AI 返回结果:")
             print(f"  intent: {intent}")
@@ -1384,8 +2107,9 @@ class AICADPlugin(QMainWindow):
             
             if intent == "drawing":
                 drawing_commands = result.get("drawing_commands", [])
-                print(f"[DEBUG] drawing_commands: {drawing_commands}")
-                
+                drawing_commands = self._sanitize_drawing_commands(drawing_commands, max_commands=120)
+                print(f"[DEBUG] drawing_commands(清洗后): {drawing_commands}")
+
                 if not drawing_commands:
                     # 尝试从 response_text 中解析绘图命令
                     parser = DrawingCommandParser()
@@ -1394,6 +2118,29 @@ class AICADPlugin(QMainWindow):
                     print(f"[DEBUG] 从文本解析出的绘图命令: {drawing_commands}")
                     if parsed.get("response_text"):
                         response_text = parsed["response_text"]
+
+                # 语义质量门：若明显不符合对象语义，触发一次模型重试
+                ok, reason = self._semantic_quality_check(self._last_user_input, drawing_commands)
+                if not ok:
+                    try:
+                        force_prompt = (
+                            "用户请求是明确绘图操作，并且需要语义匹配。请严格根据对象语义生成绘图命令，"
+                            "避免用不相关的模板替代。只返回JSON对象："
+                            "{\"intent\":\"drawing\",\"response\":\"...\",\"drawing_commands\":[...]}。"
+                            "不要解释，不要markdown，不要代码块。\n"
+                            f"用户请求：{self._last_user_input}\n"
+                            f"不合格原因：{reason}"
+                        )
+                        forced_text = self.ai_model.generate_with_context(force_prompt)
+                        parser = DrawingCommandParser()
+                        forced_parsed = parser.parse_ai_response(forced_text)
+                        forced_cmds = forced_parsed.get("drawing_commands", []) if isinstance(forced_parsed, dict) else []
+                        if forced_cmds:
+                            drawing_commands = forced_cmds
+                            response_text = forced_parsed.get("response_text") or response_text
+                            print(f"[DEBUG] 语义重试后绘图命令: {drawing_commands}")
+                    except Exception:
+                        pass
                 
                 if drawing_commands:
                     # 检查 AutoCAD 连接状态
@@ -1419,14 +2166,43 @@ class AICADPlugin(QMainWindow):
                         self.set_send_button_state(False)
                         return
                     
-                    self.add_chat_message("系统", f"🎨 自动绘制 {len(drawing_commands)} 个图形...")
+                    normalized_commands = self._normalize_drawing_commands(drawing_commands)
+                    expanded_commands, expanded_count = self._expand_commands_by_count(normalized_commands, self._last_user_input)
+                    if expanded_count > 0:
+                        self.add_chat_message("系统", f"🧬 已按数量语义自动扩增图元: +{expanded_count}")
+
+                    if self._should_skip_layout_adjustment(self._last_user_input, expanded_commands):
+                        semantic_commands = expanded_commands
+                        semantic_mode = "none"
+                        layout_commands = expanded_commands
+                        moved_count, remain_conflicts = 0, []
+                        self.add_chat_message("系统", "📐 检测为标注/尺寸场景，已保持原始几何关系（跳过自动布局）")
+                    else:
+                        semantic_commands, semantic_mode = self._apply_semantic_layout(expanded_commands, self._last_user_input, spacing=20.0)
+                        if semantic_mode != "none":
+                            self.add_chat_message("系统", f"🧩 已应用语义布局: {semantic_mode}")
+
+                        layout_commands, moved_count, remain_conflicts = self._apply_auto_layout(semantic_commands, spacing=20.0)
+                        if moved_count > 0:
+                            self.add_chat_message("系统", f"🧭 已自动调整布局，避让 {moved_count} 处潜在重叠")
+                        if remain_conflicts:
+                            self.add_chat_message("系统", f"[提示] 仍有 {len(remain_conflicts)} 处潜在重叠，已尽量优化")
+
+                    self.add_chat_message("系统", f"🎨 自动绘制 {len(layout_commands)} 个图形...")
                     self.update_status_bar("🎨 正在自动绘图...")
-                    
+
                     # 执行绘图命令
-                    print(f"[DEBUG] 执行绘图命令: {drawing_commands}")
-                    draw_result = self.acad.execute_drawing_commands(drawing_commands)
+                    print(f"[DEBUG] 执行绘图命令(标准化+布局后): {layout_commands}")
+                    draw_result = self.acad.execute_drawing_commands(layout_commands)
                     print(f"[DEBUG] 绘图结果: {draw_result}")
-                    
+
+                    if not draw_result.get("success"):
+                        # 失败命令进行一次轻量修复重试
+                        retry_result = self._retry_failed_drawing_commands(layout_commands, draw_result)
+                        if retry_result and retry_result.get("success"):
+                            draw_result = retry_result
+                            self.add_chat_message("系统", "🔁 失败命令已自动修复并重试成功")
+
                     if draw_result.get("success"):
                         self.add_chat_message("AI", f"✅ {response_text or '绘图完成'}")
                         # 缩放到全部图形
@@ -1441,8 +2217,9 @@ class AICADPlugin(QMainWindow):
                         error_msg = "\n".join(error_details) if error_details else ""
                         self.add_chat_message("AI", f"⚠️ {response_text or '部分绘图失败'} (失败{failed}个)\n{error_msg}")
                     
-                    # 写入对话历史
-                    self._chat_history.append({"role": "assistant", "content": response_text or "绘图完成"})
+                    # 写入对话历史（清洗，防止提示词污染）
+                    hist_text = self._sanitize_history_content(response_text or "绘图完成")
+                    self._chat_history.append({"role": "assistant", "content": hist_text or "绘图完成"})
                     if len(self._chat_history) > self._chat_history_max:
                         self._chat_history = self._chat_history[-self._chat_history_max:]
                     
@@ -1502,7 +2279,8 @@ class AICADPlugin(QMainWindow):
                     self.add_chat_message("AI", f"❌ {export_result.get('message', '导出失败')}")
                 
                 # 写入对话历史
-                self._chat_history.append({"role": "assistant", "content": response_text or "导出完成"})
+                hist_text = self._sanitize_history_content(response_text or "导出完成")
+                self._chat_history.append({"role": "assistant", "content": hist_text or "导出完成"})
                 if len(self._chat_history) > self._chat_history_max:
                     self._chat_history = self._chat_history[-self._chat_history_max:]
                 
@@ -1528,7 +2306,8 @@ class AICADPlugin(QMainWindow):
             self._bridge_last_ai_message = str(response_text or "")
 
             # 仅追加 AI 回复到对话历史（用户消息已在发送时写入，避免点停止后丢失上下文）
-            self._chat_history.append({"role": "assistant", "content": response_text})
+            hist_text = self._sanitize_history_content(response_text)
+            self._chat_history.append({"role": "assistant", "content": hist_text})
             if len(self._chat_history) > self._chat_history_max:
                 self._chat_history = self._chat_history[-self._chat_history_max:]
             self._pending_user_message = None

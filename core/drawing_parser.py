@@ -20,7 +20,7 @@ class DrawingCommandParser:
     # 支持的绘图类型
     SUPPORTED_TYPES = {
         "line", "circle", "rectangle", "rect", "arc", "text", 
-        "polyline", "pline", "polygon", "point"
+        "polyline", "pline", "polygon", "point", "star"
     }
     
     # 默认参数
@@ -32,6 +32,15 @@ class DrawingCommandParser:
         "text": {"height": 2.5, "layer": None},
         "polyline": {"closed": False, "layer": None},
         "polygon": {"sides": 6, "layer": None},
+        "star": {
+            "center": (0, 0, 0),
+            "outer_radius": 10,
+            "inner_radius": 5,
+            "points": 5,
+            "start_angle": 0,
+            "closed": True,
+            "layer": None
+        },
     }
     
     def __init__(self):
@@ -329,6 +338,41 @@ class DrawingCommandParser:
             if "radius" not in validated:
                 validated["radius"] = 10
             validated["center"] = self._ensure_tuple(validated["center"])
+        
+        elif cmd_type == "star":
+            if "center" not in validated:
+                self.validation_errors.append("星形缺少中心点(center)")
+                return None
+            validated["center"] = self._ensure_tuple(validated["center"])
+            if len(validated["center"]) < 2:
+                self.validation_errors.append("星形中心点格式错误")
+                return None
+            
+            outer_r = validated.get("outer_radius", None)
+            inner_r = validated.get("inner_radius", None)
+            if outer_r is None or float(outer_r) <= 0:
+                self.validation_errors.append("星形缺少有效外半径(outer_radius)")
+                return None
+            if inner_r is None or float(inner_r) <= 0:
+                self.validation_errors.append("星形缺少有效内半径(inner_radius)")
+                return None
+            validated["outer_radius"] = float(outer_r)
+            validated["inner_radius"] = float(inner_r)
+            
+            pts = validated.get("points", None)
+            if pts is None:
+                pts = 5
+            try:
+                pts_i = int(pts)
+            except Exception:
+                pts_i = 5
+            if pts_i < 3 or pts_i > 32:
+                self.validation_errors.append("星形 points 必须在3-32之间")
+                return None
+            validated["points"] = pts_i
+            
+            validated["start_angle"] = float(validated.get("start_angle", 0))
+            validated["closed"] = bool(validated.get("closed", True))
         
         return validated
     
