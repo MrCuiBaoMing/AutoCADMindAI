@@ -137,6 +137,7 @@ class AICADPlugin(QMainWindow):
         self._bridge_last_ai_seq = 0
         self._bridge_last_ai_message = ""
         self._orchestrator = None
+        self._request_states = {}  # request_id -> {state, timestamps, meta}
 
         # 本地 IPC Bridge：供 AutoCAD C# 插件调用
         self.bridge = AICADBridgeServer(
@@ -1023,10 +1024,46 @@ class AICADPlugin(QMainWindow):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.chat_display.append(f"[{timestamp}] {sender}: {message}")
         self.chat_display.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _log_runtime_event(self, request_id: int, event: str, **kwargs):
+        """结构化实时日志（控制台）。"""
+        payload = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "request_id": int(request_id or 0),
+            "event": event,
+        }
+        if kwargs:
+            payload.update(kwargs)
+        try:
+            print(f"[RUNTIME] {json.dumps(payload, ensure_ascii=False)}")
+        except Exception:
+            print(f"[RUNTIME] request_id={request_id} event={event} data={kwargs}")
+
+    def _set_request_state(self, request_id: int, state: str, **meta):
+        """更新请求状态机。"""
+        rid = int(request_id or 0)
+        now = datetime.now().timestamp()
+        rec = self._request_states.get(rid) or {"state": "", "timestamps": {}, "meta": {}}
+        rec["state"] = state
+        rec["timestamps"][state] = now
+        if meta:
+            rec["meta"].update(meta)
+        self._request_states[rid] = rec
+
+        # 计算从 RECEIVED 到当前状态的耗时
+        elapsed_ms = None
+        received_ts = rec["timestamps"].get("RECEIVED")
+        if received_ts:
+            elapsed_ms = int((now - received_ts) * 1000)
+
+        self._log_runtime_event(rid, "STATE_CHANGE", state=state, elapsed_ms=elapsed_ms, meta=meta or {})
     
     def process_with_ai(self, command, request_id=None):
         """使用AI处理命令（异步网络请求，不阻塞界面）"""
         try:
+            rid = int(request_id or self._active_request_id)
+            self._set_request_state(rid, "RECEIVED", user_input=(command or "")[:200])
+
             # 每次新请求前重置"用户已停止"标记，避免上次点停止导致本次响应被丢弃
             self._user_requested_stop = False
 
@@ -1082,6 +1119,7 @@ class AICADPlugin(QMainWindow):
                 "last_kb_doc_title": getattr(self._orchestrator, "last_kb_doc_title", ""),
             })
             print(f"[Debug] Analysis: {analysis}")
+            self._set_request_state(rid, "ANALYZED", analysis_intent=str((analysis or {}).get("intent", "")))
             orchestration_result = self._orchestrator.handle(command, analysis)
             if isinstance(orchestration_result, dict):
                 route = orchestration_result.get("route")
@@ -1190,6 +1228,8 @@ class AICADPlugin(QMainWindow):
             self.ai_thread.start()
 
         except Exception as e:
+            rid = int(request_id or self._active_request_id)
+            self._set_request_state(rid, "FAILED", reason=str(e)[:300])
             self.is_processing = False
             self.set_send_button_state(False)
             self.add_chat_message("系统", f"[错误] 处理失败: {str(e)}")
@@ -1220,6 +1260,7 @@ class AICADPlugin(QMainWindow):
             result = self.ai_model.parse_response(data)
             if isinstance(result, dict):
                 result["request_id"] = request_id
+                self._set_request_state(request_id, "GENERATED", intent=result.get("intent", "chat"))
             self.on_ai_result(result)
         except Exception as e:
             print(f"[Network Exception] {str(e)}")
@@ -2106,6 +2147,7 @@ class AICADPlugin(QMainWindow):
             print(f"[DEBUG] 检查绘图意图: intent={intent}, is_drawing={intent == 'drawing'}")
             
             if intent == "drawing":
+                self._set_request_state(result_request_id, "VALIDATED", stage="drawing_intent")
                 drawing_commands = result.get("drawing_commands", [])
                 drawing_commands = self._sanitize_drawing_commands(drawing_commands, max_commands=120)
                 print(f"[DEBUG] drawing_commands(清洗后): {drawing_commands}")
@@ -2192,6 +2234,7 @@ class AICADPlugin(QMainWindow):
                     self.update_status_bar("🎨 正在自动绘图...")
 
                     # 执行绘图命令
+                    self._set_request_state(result_request_id, "EXECUTING", command_count=len(layout_commands))
                     print(f"[DEBUG] 执行绘图命令(标准化+布局后): {layout_commands}")
                     draw_result = self.acad.execute_drawing_commands(layout_commands)
                     print(f"[DEBUG] 绘图结果: {draw_result}")
@@ -2204,10 +2247,12 @@ class AICADPlugin(QMainWindow):
                             self.add_chat_message("系统", "🔁 失败命令已自动修复并重试成功")
 
                     if draw_result.get("success"):
+                        self._set_request_state(result_request_id, "EXECUTED", failed_count=0)
                         self.add_chat_message("AI", f"✅ {response_text or '绘图完成'}")
                         # 缩放到全部图形
                         self.acad.zoom_extents()
                     else:
+                        self._set_request_state(result_request_id, "FAILED", failed_count=draw_result.get("failed_count", 0), reason="draw_execute_failed")
                         failed = draw_result.get("failed_count", 0)
                         # 显示详细错误信息
                         error_details = []
