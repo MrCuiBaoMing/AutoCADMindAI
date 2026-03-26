@@ -332,14 +332,13 @@ class Orchestrator:
             }
 
     def _generate_cad_commands_from_analysis(self, analysis: Dict[str, Any]) -> List[str]:
-        """基于分析结果生成AutoCAD命令序列"""
+        """基于分析结果生成AutoCAD命令序列（命令行模式，兼容保留）。"""
         if not analysis.get("success", False):
             return []
 
         analysis_data = analysis.get("analysis", {})
         user_input = analysis.get("user_input", "")
 
-        # 构建详细的命令生成prompt
         command_prompt = f"""基于以下绘图分析结果，生成具体的AutoCAD命令序列：
 
 分析结果: {json.dumps(analysis_data, ensure_ascii=False, indent=2)}
@@ -347,27 +346,57 @@ class Orchestrator:
 用户原始需求: {user_input}
 
 请生成可直接执行的AutoCAD命令列表。要求：
-
 1. 按分析中的execution_order顺序生成命令
 2. 使用精确坐标，避免重叠
-3. 包含必要的图层设置 (LAYER, SET)
-4. 添加尺寸标注 (DIMLINEAR, DIMALIGNED等)
-5. 对于复杂图形，使用多条简单命令组合
-6. 坐标系：X向右为正，Y向上为正，从(0,0)开始
+3. 对于复杂图形，使用多条简单命令组合
+4. 坐标系：X向右为正，Y向上为正，从(0,0)开始
 
 返回格式：JSON {{"commands": ["命令1", "命令2", ...]}}
-
 只返回JSON，不要其他文本。"""
 
         try:
             command_result = self.ai_model.generate_with_context(command_prompt)
             command_data = json.loads(command_result.strip())
-
-            return command_data.get("commands", [])
-
+            return command_data.get("commands", []) if isinstance(command_data, dict) else []
         except Exception as e:
             print(f"[Orchestrator] 命令生成失败: {e}")
             return []
+
+    def _generate_structured_drawing_commands(self, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """基于分析结果生成结构化绘图命令（优先用于复杂图形）。"""
+        if not analysis.get("success", False):
+            return []
+
+        analysis_data = analysis.get("analysis", {})
+        user_input = analysis.get("user_input", "")
+
+        drawing_prompt = f"""你是AutoCAD绘图命令生成器。请基于分析结果输出结构化绘图JSON。
+
+分析结果：{json.dumps(analysis_data, ensure_ascii=False)}
+用户需求：{user_input}
+
+要求：
+1) 只输出一个JSON对象
+2) JSON格式必须是：{{"drawing_commands":[...]}}
+3) drawing_commands 中每个元素必须是以下类型之一：
+   - line: {{"type":"line","start":[x,y,0],"end":[x,y,0]}}
+   - circle: {{"type":"circle","center":[x,y,0],"radius":r}}
+   - rectangle: {{"type":"rectangle","corner1":[x1,y1],"corner2":[x2,y2]}}
+   - polyline: {{"type":"polyline","points":[[x1,y1],[x2,y2],...],"closed":true|false}}
+   - arc: {{"type":"arc","center":[x,y,0],"radius":r,"start_angle":a,"end_angle":b}}
+   - text: {{"type":"text","content":"文字","position":[x,y,0],"height":h}}
+4) 对复杂图形进行拆解，避免重叠，优先使用正坐标
+5) 不要输出解释文本
+"""
+
+        try:
+            raw = self.ai_model.generate_with_context(drawing_prompt)
+            data = json.loads(raw.strip())
+            if isinstance(data, dict) and isinstance(data.get("drawing_commands"), list):
+                return data.get("drawing_commands", [])
+        except Exception as e:
+            print(f"[Orchestrator] 结构化绘图命令生成失败: {e}")
+        return []
 
     def handle(self, user_text: str, analysis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         effective_query = self._compose_query_with_context(user_text)
@@ -619,15 +648,16 @@ class Orchestrator:
             return self._build_kb_context_result(effective_query, chunks)
 
         if intent == "CAD_COMMAND":
-            # 先进行绘图分析
+            # 先进行绘图分析（复杂图形场景）
             analysis = self._analyze_cad_drawing(user_text)
 
             if analysis.get("success"):
-                # 基于分析结果生成命令
-                commands = self._generate_cad_commands_from_analysis(analysis)
                 analysis_data = analysis.get("analysis", {})
+                drawing_commands = self._generate_structured_drawing_commands(analysis)
+                # 兼容保留：必要时仍可回退命令行模式
+                commands = self._generate_cad_commands_from_analysis(analysis) if not drawing_commands else []
 
-                response = f"已分析绘图需求：{analysis_data.get('drawing_type', '未知')}类型，复杂度{analysis_data.get('complexity', '未知')}，预计{analysis_data.get('estimated_commands', 0)}个命令。"
+                response = f"已分析绘图需求：{analysis_data.get('drawing_type', '未知')}类型，复杂度{analysis_data.get('complexity', '未知')}，预计{analysis_data.get('estimated_commands', 0)}个步骤。"
                 response += f"\n布局策略：{analysis_data.get('layout_strategy', '标准布局')}"
 
                 return {
@@ -635,12 +665,12 @@ class Orchestrator:
                     "route": "cad",
                     "response": response,
                     "commands": commands,
+                    "drawing_commands": drawing_commands,
                     "drawing_analysis": analysis_data
                 }
             else:
-                # 分析失败，回退到原有逻辑
                 print(f"[Orchestrator] CAD分析失败，使用回退模式: {analysis.get('error', '未知错误')}")
-                return {"intent": "command_proxy", "route": "cad", "response": "绘图分析失败，使用简化模式。", "commands": []}
+                return {"intent": "command_proxy", "route": "cad", "response": "绘图分析失败，使用简化模式。", "commands": [], "drawing_commands": []}
 
         if intent == "ERP_QUERY":
             return {"intent": "chat", "route": "erp", "response": "ERP 查询能力正在接入中（下一阶段）。", "commands": [], "citations": []}

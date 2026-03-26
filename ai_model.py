@@ -630,8 +630,9 @@ class LMStudioModel(AIModel):
         data = {
             "model": self.model_name or "qwen2.5-0.5b-instruct",
             "messages": messages,
-            "temperature": 0,  # 降低温度，减少随机性/推理过程
-            "max_tokens": 800  # 增加token数量，确保复杂绘图命令完整返回
+            "temperature": 0,
+            "top_p": 0.9,
+            "max_tokens": 1600
         }
 
         # 如果有工具，尝试使用 tool_choice（部分模型支持）
@@ -768,8 +769,12 @@ class LMStudioModel(AIModel):
                                 print(f"[AI Model] 手动解析嵌套JSON失败: {e}")
                                 pass
                 
-                # 安全兜底：非 command 意图禁止下发命令
+                # 安全兜底：仅 command 允许通用 commands，下发绘图走 drawing_commands
                 if intent != "command":
+                    commands = []
+                if intent == "drawing" and (not drawing_commands) and isinstance(command_data.get("commands"), list):
+                    # 兼容某些模型把结构化绘图命令误放在 commands 字段
+                    drawing_commands = command_data.get("commands", [])
                     commands = []
                 return {
                     "intent": intent,

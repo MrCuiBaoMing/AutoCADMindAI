@@ -1140,6 +1140,19 @@ class AICADPlugin(QMainWindow):
                     )
                     return
 
+                if route == "cad":
+                    # CAD 路由优先直通，避免再次走通用大模型导致复杂图形意图丢失
+                    self.on_ai_result(
+                        {
+                            "intent": "drawing" if orchestration_result.get("drawing_commands") else "command",
+                            "response": orchestration_result.get("response", ""),
+                            "commands": orchestration_result.get("commands", []),
+                            "drawing_commands": orchestration_result.get("drawing_commands", []),
+                            "request_id": int(request_id or self._active_request_id),
+                        }
+                    )
+                    return
+
             composed_context = {
                 "soul": self._load_file_text("SOUL.md"),
                 "user_profile": self._load_file_text("USER.md"),
