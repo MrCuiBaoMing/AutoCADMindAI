@@ -1,0 +1,12 @@
+{
+  "name": "erp_query",
+  "description": "ERP查询技能",
+  "type": "tool",
+  "parameters": {
+    "query_type": "string",
+    "parameters": "object",
+    "filters": "object"
+  },
+  "prompt_file": "prompt.txt",
+  "enabled": true
+}

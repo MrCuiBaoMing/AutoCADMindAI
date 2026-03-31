@@ -1,0 +1,12 @@
+{
+  "name": "file_search",
+  "description": "文件搜索技能",
+  "type": "tool",
+  "parameters": {
+    "query": "string",
+    "file_types": "array",
+    "path": "string"
+  },
+  "prompt_file": "prompt.txt",
+  "enabled": true
+}

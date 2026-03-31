@@ -130,13 +130,16 @@ class OpenAIModel(AIModel):
             print("警告: 未设置OpenAI API密钥")
 
     def _build_messages(self, command: str, context: Optional[Dict[str, Any]] = None, history: Optional[list] = None):
-        system_prompt = "你是一个专业的AutoCAD绘图助手，专注于按用户需求生成可直接执行的AutoCAD命令。"
-        system_prompt += "\n- 如果用户要求绘制建筑类图纸（如楼房正立面、平面图、层高、门窗等），请明确生成结构化坐标和尺寸，并尽量避免图形重叠。"
-        system_prompt += "\n- 规则：只输出一个JSON对象，包含`commands`数组；不要输出多余文本。"
-        system_prompt += "\n- 坐标系：X向右，Y向上；基准原点(0,0)一般为建筑左下角或用户指定基点。"
-        system_prompt += "\n- 如果可能，请包含尺寸标注命令（例如 DIMLINEAR, DIMANGULAR），并标注关键层高/总高度。"
-        system_prompt += "\n- 复杂图形可以分步执行：先外围墙体，再门窗再内饰。"
-        system_prompt += "\n请分析用户需求并返回命令列表。"
+        # 使用自定义提示词（如果有）
+        system_prompt = context.get("custom_prompt", "") if context else ""
+        if not system_prompt:
+            system_prompt = "你是一个专业的AutoCAD绘图助手，专注于按用户需求生成可直接执行的AutoCAD命令。"
+            system_prompt += "\n- 如果用户要求绘制建筑类图纸（如楼房正立面、平面图、层高、门窗等），请明确生成结构化坐标和尺寸，并尽量避免图形重叠。"
+            system_prompt += "\n- 规则：只输出一个JSON对象，包含`commands`数组；不要输出多余文本。"
+            system_prompt += "\n- 坐标系：X向右，Y向上；基准原点(0,0)一般为建筑左下角或用户指定基点。"
+            system_prompt += "\n- 如果可能，请包含尺寸标注命令（例如 DIMLINEAR, DIMANGULAR），并标注关键层高/总高度。"
+            system_prompt += "\n- 复杂图形可以分步执行：先外围墙体，再门窗再内饰。"
+            system_prompt += "\n请分析用户需求并返回命令列表。"
         user_prompt = f"用户请求: {command}\n"
         if context:
             user_prompt += f"上下文: {json.dumps(context)}\n"
@@ -625,7 +628,11 @@ class LMStudioModel(AIModel):
         if tools_prompt:
             user_prompt = f"{tools_prompt}\n\n{user_prompt}"
 
-        messages = [{"role": "system", "content": self._SYSTEM_PROMPT}]
+        # 使用自定义提示词（如果有）
+        system_prompt = context.get("custom_prompt", "") if context else ""
+        if not system_prompt:
+            system_prompt = self._SYSTEM_PROMPT
+        messages = [{"role": "system", "content": system_prompt}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_prompt})

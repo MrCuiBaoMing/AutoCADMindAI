@@ -1,0 +1,12 @@
+{
+  "name": "kb_query",
+  "description": "知识库查询技能",
+  "type": "tool",
+  "parameters": {
+    "query": "string",
+    "domain": "string",
+    "doc_code": "string"
+  },
+  "prompt_file": "prompt.txt",
+  "enabled": true
+}

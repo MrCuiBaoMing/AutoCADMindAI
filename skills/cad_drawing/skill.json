@@ -1,0 +1,12 @@
+{
+  "name": "cad_drawing",
+  "description": "AutoCAD绘图技能",
+  "type": "tool",
+  "parameters": {
+    "drawing_type": "string",
+    "dimensions": "object",
+    "position": "object"
+  },
+  "prompt_file": "prompt.txt",
+  "enabled": true
+}

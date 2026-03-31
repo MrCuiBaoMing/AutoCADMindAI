@@ -33,6 +33,8 @@ from core.orchestrator import Orchestrator
 from core.ai_intent_analyzer import AIIntentAnalyzer
 from core.answer_cache import AnswerCache
 from core.drawing_parser import DrawingCommandParser
+from core.skill_manager import SkillManager
+from core.prompt_manager import PromptManager
 from connectors.web_retriever import WebRetriever
 
 class StatusIndicator(QWidget):
@@ -108,6 +110,12 @@ class AICADPlugin(QMainWindow):
         # 初始化控制器
         self.acad = AutoCADController()
         self.config = ConfigManager()
+        
+        # 初始化技能管理器和提示词管理器
+        self.skill_manager = SkillManager()
+        self.prompt_manager = PromptManager()
+        # 默认使用专业工程师性格
+        self.prompt_manager.set_personality("professional")
         
         self.is_processing = False
         self.ai_thread = None
@@ -417,241 +425,455 @@ class AICADPlugin(QMainWindow):
                 self.update_status_bar(f"模型切换失败: {str(e)}")
                 self.add_chat_message("系统", f"模型切换失败: {str(e)}")
     
+    def on_personality_changed(self, index):
+        """性格切换事件"""
+        if index >= 0:
+            personality_id = self.personality_combo.itemData(index)
+            if personality_id:
+                success = self.prompt_manager.set_personality(personality_id)
+                if success:
+                    personality_name = self.personality_combo.itemText(index)
+                    # 确保statusBarWidget已经初始化
+                    if hasattr(self, 'statusBarWidget'):
+                        self.update_status_bar(f"已切换到性格: {personality_name}")
+                    # 确保chat_display已经初始化
+                    if hasattr(self, 'chat_display'):
+                        self.add_chat_message("系统", f"已切换到性格: {personality_name}")
+                else:
+                    # 确保statusBarWidget已经初始化
+                    if hasattr(self, 'statusBarWidget'):
+                        self.update_status_bar("性格切换失败")
+                    # 确保chat_display已经初始化
+                    if hasattr(self, 'chat_display'):
+                        self.add_chat_message("系统", "性格切换失败")
+    
     def init_ui(self):
         """初始化UI"""
-        # 主布局
-        central_widget = QWidget()
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(10)
+        # 主窗口
+        self.setWindowTitle("AI CAD - AutoCAD智能助手")
+        self.setGeometry(100, 100, 1000, 700)
         
-        # 标题栏（用于拖动窗口）
-        title_layout = QHBoxLayout()
+        # 主布局 - 微信风格的左右布局
+        central_widget = QWidget()
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # 左侧功能列表 - 微信风格的联系人列表
+        left_widget = QWidget()
+        left_widget.setFixedWidth(180)
+        left_widget.setStyleSheet("""
+            QWidget {
+                background-color: #f2f2f2;
+                border-right: 1px solid #e0e0e0;
+            }
+        """)
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+        
+        # 左侧顶部搜索栏 - 微信风格
+        search_widget = QWidget()
+        search_widget.setStyleSheet("""
+            QWidget {
+                background-color: #f2f2f2;
+                padding: 10px;
+                border-bottom: 1px solid #e0e0e0;
+            }
+        """)
+        search_layout = QHBoxLayout(search_widget)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(8)
+        
+        search_input = QLineEdit()
+        search_input.setPlaceholderText("搜索功能")
+        search_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #e9e9e9;
+                border: none;
+                border-radius: 15px;
+                padding: 6px 12px;
+                font-size: 13px;
+                color: #333333;
+            }
+            QLineEdit:focus {
+                outline: none;
+                background-color: #ffffff;
+                border: 1px solid #d0d0d0;
+            }
+        """)
+        
+        search_layout.addWidget(search_input)
+        
+        # 功能列表 - 微信风格
+        self.function_tree = QTreeWidget()
+        self.function_tree.setHeaderHidden(True)
+        self.function_tree.setStyleSheet("""
+            QTreeWidget {
+                background-color: #f2f2f2;
+                border: none;
+                font-size: 14px;
+                color: #333333;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+            }
+            QTreeWidget::item {
+                padding: 12px 15px;
+                border-bottom: 1px solid #e0e0e0;
+            }
+            QTreeWidget::item:selected {
+                background-color: #e8f0fe;
+                color: #1967d2;
+            }
+            QTreeWidget::item:hover {
+                background-color: #e9e9e9;
+            }
+            /* 滚动条样式 */
+            QScrollBar:vertical {
+                width: 6px;
+                background: #f2f2f2;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c1c1c1;
+                border-radius: 3px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #a8a8a8;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+        """)
+        self.add_function_nodes()
+        self.function_tree.itemDoubleClicked.connect(self.execute_function)
+        
+        left_layout.addWidget(search_widget)
+        left_layout.addWidget(self.function_tree)
+        
+        # 右侧聊天区域 - 微信风格的聊天界面
+        right_widget = QWidget()
+        right_widget.setStyleSheet("""
+            QWidget {
+                background-color: #ffffff;
+            }
+        """)
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+        
+        # 右侧顶部标题栏 - 微信风格
+        right_title_widget = QWidget()
+        right_title_widget.setStyleSheet("""
+            QWidget {
+                background-color: #ffffff;
+                border-bottom: 1px solid #e0e0e0;
+                padding: 12px 20px;
+            }
+        """)
+        right_title_layout = QHBoxLayout(right_title_widget)
+        right_title_layout.setContentsMargins(0, 0, 0, 0)
+        right_title_layout.setSpacing(15)
+        
+        # 标题 - 微信风格
         title_label = QLabel("🤖 AI CAD 助手")
-        title_label.setStyleSheet("font-weight: bold; font-size: 16px; color: #2c3e50;")
+        title_label.setStyleSheet("font-weight: bold; font-size: 16px; color: #333333; font-family: 'Microsoft YaHei', Arial, sans-serif;")
+        
+        # 状态信息
+        status_widget = QWidget()
+        status_layout = QHBoxLayout(status_widget)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(10)
         
         # AutoCAD 状态指示器
         self.status_indicator = StatusIndicator()
         self.status_label = QLabel("未连接")
-        self.status_label.setStyleSheet("font-size: 12px; color: #7f8c8d;")
-
+        self.status_label.setStyleSheet("font-size: 12px; color: #666666;")
+        
         # 数据库状态指示器
         self.db_status_indicator = StatusIndicator()
         self.db_status_label = QLabel("书库未连接")
-        self.db_status_label.setStyleSheet("font-size: 12px; color: #7f8c8d;")
+        self.db_status_label.setStyleSheet("font-size: 12px; color: #666666;")
         
-        # 窗口控制按钮（仅图标，无背景块）
-        min_button = QPushButton("−")
-        min_button.setFixedSize(34, 26)
-        min_button.setStyleSheet("""
+        status_layout.addWidget(self.status_indicator)
+        status_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.db_status_indicator)
+        status_layout.addWidget(self.db_status_label)
+        
+        # 右侧顶部操作按钮 - 微信风格
+        right_controls = QWidget()
+        right_controls_layout = QHBoxLayout(right_controls)
+        right_controls_layout.setContentsMargins(0, 0, 0, 0)
+        right_controls_layout.setSpacing(8)
+        
+        settings_button = QPushButton("⚙️")
+        settings_button.setFixedSize(32, 32)
+        settings_button.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
-                color: #7b7f87;
+                color: #666666;
                 border: none;
-                padding: 0;
-                font-size: 20px;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: transparent;
-                color: #a4a8b0;
-            }
-            QPushButton:pressed {
-                background-color: transparent;
-                color: #5f6470;
-            }
-        """)
-        min_button.clicked.connect(self.showMinimized)
-
-        self.max_button = QPushButton("▢")
-        self.max_button.setFixedSize(34, 26)
-        self.max_button.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: #7b7f87;
-                border: none;
+                border-radius: 50%;
                 padding: 0;
                 font-size: 16px;
-                font-weight: 600;
             }
             QPushButton:hover {
-                background-color: transparent;
-                color: #a4a8b0;
-            }
-            QPushButton:pressed {
-                background-color: transparent;
-                color: #5f6470;
+                background-color: #e9e9e9;
             }
         """)
-        self.max_button.clicked.connect(self.toggle_maximize)
-
+        settings_button.clicked.connect(self.open_settings)
+        
+        # 最小化按钮
+        minimize_button = QPushButton("—")
+        minimize_button.setFixedSize(32, 32)
+        minimize_button.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #666666;
+                border: none;
+                border-radius: 50%;
+                padding: 0;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e9e9e9;
+            }
+        """)
+        minimize_button.clicked.connect(self.showMinimized)
+        
+        # 关闭按钮
         close_button = QPushButton("✕")
-        close_button.setFixedSize(30, 24)
+        close_button.setFixedSize(32, 32)
         close_button.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
-                color: #7b7f87;
+                color: #666666;
                 border: none;
+                border-radius: 50%;
                 padding: 0;
-                font-size: 13px;
-                font-weight: 600;
+                font-size: 14px;
+                font-weight: bold;
             }
             QPushButton:hover {
-                background-color: transparent;
-                color: #d96b6b;
-            }
-            QPushButton:pressed {
-                background-color: transparent;
-                color: #b44b4b;
+                background-color: #e9e9e9;
             }
         """)
         close_button.clicked.connect(self.close)
         
-        # 应用内菜单（与标题同一行，位于左侧）
-        self.menu_file_btn = QToolButton()
-        self.menu_file_btn.setText("文件")
-        self.menu_file_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        file_menu = QMenu(self)
-        file_menu.addAction("设置", self.open_settings)
-        self.menu_file_btn.setMenu(file_menu)
-
-        self.menu_edit_btn = QToolButton(); self.menu_edit_btn.setText("编辑")
-        self.menu_view_btn = QToolButton(); self.menu_view_btn.setText("视图")
-        self.menu_draw_btn = QToolButton(); self.menu_draw_btn.setText("绘图")
-        self.menu_tools_btn = QToolButton(); self.menu_tools_btn.setText("工具")
-        self.menu_help_btn = QToolButton(); self.menu_help_btn.setText("帮助")
-        self.menu_help_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        help_menu = QMenu(self)
-        help_menu.addAction("关于软件", self.show_about_dialog)
-        help_menu.addAction("版权与授权", self.show_copyright_dialog)
-        self.menu_help_btn.setMenu(help_menu)
-
-        for btn in [self.menu_file_btn, self.menu_edit_btn, self.menu_view_btn, self.menu_draw_btn, self.menu_tools_btn, self.menu_help_btn]:
-            btn.setStyleSheet("""
-                QToolButton {
-                    background: transparent;
-                    color: #2c3e50;
-                    border: none;
-                    padding: 4px 8px;
-                    font-size: 13px;
-                }
-                QToolButton:hover {
-                    background-color: #ecf0f1;
-                    border-radius: 4px;
-                }
-            """)
-            title_layout.addWidget(btn)
-
-        title_layout.addSpacing(8)
-        title_layout.addWidget(title_label)
-        title_layout.addSpacing(10)
-        title_layout.addWidget(self.status_indicator)
-        title_layout.addWidget(self.status_label)
-        title_layout.addSpacing(8)
-        title_layout.addWidget(self.db_status_indicator)
-        title_layout.addWidget(self.db_status_label)
-        title_layout.addStretch()
-        title_layout.addWidget(min_button)
-        title_layout.addSpacing(6)
-        title_layout.addWidget(self.max_button)
-        title_layout.addSpacing(6)
-        title_layout.addWidget(close_button)
-
-        # 顶部控制栏
-        control_layout = QHBoxLayout()
-
+        right_controls_layout.addWidget(settings_button)
+        right_controls_layout.addWidget(minimize_button)
+        right_controls_layout.addWidget(close_button)
+        
+        right_title_layout.addWidget(title_label)
+        right_title_layout.addStretch()
+        right_title_layout.addWidget(status_widget)
+        right_title_layout.addWidget(right_controls)
+        
+        # 模型和性格选择栏 - 微信风格
+        control_widget = QWidget()
+        control_widget.setStyleSheet("""
+            QWidget {
+                background-color: #f8f9fa;
+                border-bottom: 1px solid #e0e0e0;
+                padding: 10px 20px;
+            }
+        """)
+        control_layout = QHBoxLayout(control_widget)
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(15)
+        
         # 模型选择
-        model_label = QLabel("🧠 AI模型:")
-        model_label.setStyleSheet("font-size: 13px; color: #34495e;")
+        model_group = QWidget()
+        model_layout = QHBoxLayout(model_group)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.setSpacing(8)
+        
+        model_label = QLabel("🧠 模型:")
+        model_label.setStyleSheet("font-size: 13px; color: #666666;")
         self.model_combo = QComboBox()
         self.model_combo.currentIndexChanged.connect(self.on_model_changed)
-        self.model_combo.setMinimumWidth(180)
-
-        # 连接按钮
+        self.model_combo.setMinimumWidth(150)
+        self.model_combo.setStyleSheet("""
+            QComboBox {
+                background-color: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 13px;
+                color: #333333;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+            }
+            QComboBox:hover {
+                border-color: #07c160;
+                background-color: #f8f9fa;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 4px solid #666666;
+                margin-right: 8px;
+            }
+        """)
+        
+        model_layout.addWidget(model_label)
+        model_layout.addWidget(self.model_combo)
+        
+        # 性格选择
+        personality_group = QWidget()
+        personality_layout = QHBoxLayout(personality_group)
+        personality_layout.setContentsMargins(0, 0, 0, 0)
+        personality_layout.setSpacing(8)
+        
+        personality_label = QLabel("👤 性格:")
+        personality_label.setStyleSheet("font-size: 13px; color: #666666;")
+        self.personality_combo = QComboBox()
+        self.personality_combo.currentIndexChanged.connect(self.on_personality_changed)
+        self.personality_combo.setMinimumWidth(150)
+        self.personality_combo.setStyleSheet("""
+            QComboBox {
+                background-color: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 13px;
+                color: #333333;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+            }
+            QComboBox:hover {
+                border-color: #07c160;
+                background-color: #f8f9fa;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 4px solid #666666;
+                margin-right: 8px;
+            }
+        """)
+        # 加载性格选项
+        personalities = self.prompt_manager.list_personalities()
+        for personality_id, personality_data in personalities.items():
+            self.personality_combo.addItem(personality_data.get("name", personality_id), personality_id)
+        
+        personality_layout.addWidget(personality_label)
+        personality_layout.addWidget(self.personality_combo)
+        
+        # 连接按钮 - 微信风格
         self.connect_button = QPushButton("🔗 连接AutoCAD")
         self.connect_button.clicked.connect(self.connect_to_acad)
-
-        control_layout.addWidget(model_label)
-        control_layout.addWidget(self.model_combo)
+        self.connect_button.setStyleSheet("""
+            QPushButton {
+                background-color: #07c160;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 13px;
+                font-weight: 500;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+            }
+            QPushButton:hover {
+                background-color: #05a650;
+            }
+        """)
+        
+        control_layout.addWidget(model_group)
+        control_layout.addWidget(personality_group)
         control_layout.addStretch()
         control_layout.addWidget(self.connect_button)
-
-        # 添加标题栏和控制栏到主布局
-        main_layout.addLayout(title_layout)
-        main_layout.addLayout(control_layout)
         
-        # 中间分割器
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        
-        # 聊天区域
-        chat_widget = QWidget()
-        chat_layout = QVBoxLayout(chat_widget)
-        chat_layout.setContentsMargins(0, 0, 0, 0)
-        
+        # 聊天显示区域 - 微信风格的浅蓝色背景
         self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
         self.chat_display.setPlaceholderText("💬 开始与AI助手对话...")
+        self.chat_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #e6f7ff;
+                border: none;
+                padding: 20px;
+                font-size: 14px;
+                color: #333333;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+                line-height: 1.5;
+            }
+        """)
         
-        input_layout = QHBoxLayout()
+        # 输入区域 - 微信风格的输入框
+        input_widget = QWidget()
+        input_widget.setStyleSheet("""
+            QWidget {
+                background-color: #ffffff;
+                border-top: 1px solid #e0e0e0;
+                padding: 10px 20px;
+            }
+        """)
+        input_layout = QHBoxLayout(input_widget)
+        input_layout.setContentsMargins(0, 0, 0, 0)
+        input_layout.setSpacing(10)
+        
         self.input_field = QLineEdit()
         self.input_field.setPlaceholderText("输入指令，例如：绘制一个圆形，半径10")
         self.input_field.returnPressed.connect(self.send_command)
+        self.input_field.setStyleSheet("""
+            QLineEdit {
+                background-color: #f0f0f0;
+                border: none;
+                border-radius: 20px;
+                padding: 10px 15px;
+                font-size: 14px;
+                color: #333333;
+            }
+            QLineEdit:focus {
+                outline: none;
+                background-color: #ffffff;
+                border: 1px solid #d0d0d0;
+            }
+        """)
         
-        self.send_button = QPushButton("发送 ➤")
+        self.send_button = QPushButton("发送")
         self.send_button.clicked.connect(self.on_send_button_clicked)
-        self.send_button.setFixedWidth(80)
+        self.send_button.setStyleSheet("""
+            QPushButton {
+                background-color: #07c160;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #05a650;
+            }
+        """)
         
         input_layout.addWidget(self.input_field)
         input_layout.addWidget(self.send_button)
         
-        chat_layout.addWidget(self.chat_display)
-        chat_layout.addLayout(input_layout)
+        right_layout.addWidget(right_title_widget)
+        right_layout.addWidget(control_widget)
+        right_layout.addWidget(self.chat_display, 1)
+        right_layout.addWidget(input_widget)
         
-        # 命令历史和功能树
-        bottom_widget = QWidget()
-        bottom_layout = QHBoxLayout(bottom_widget)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 命令历史
-        history_widget = QWidget()
-        history_layout = QVBoxLayout(history_widget)
-        history_layout.setContentsMargins(0, 0, 0, 0)
-        history_label = QLabel("📋 命令历史")
-        history_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #34495e;")
-        self.history_display = QTextEdit()
-        self.history_display.setReadOnly(True)
-        history_layout.addWidget(history_label)
-        history_layout.addWidget(self.history_display)
-        
-        # 功能树
-        function_widget = QWidget()
-        function_layout = QVBoxLayout(function_widget)
-        function_layout.setContentsMargins(0, 0, 0, 0)
-        function_label = QLabel("⚡ 快捷功能")
-        function_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #34495e;")
-        self.function_tree = QTreeWidget()
-        self.function_tree.setHeaderLabels(["功能", "描述"])
-        self.add_function_nodes()
-        self.function_tree.itemDoubleClicked.connect(self.execute_function)
-        
-        function_layout.addWidget(function_label)
-        function_layout.addWidget(self.function_tree)
-        
-        bottom_layout.addWidget(history_widget, 1)
-        bottom_layout.addWidget(function_widget, 1)
-        
-        splitter.addWidget(chat_widget)
-        splitter.addWidget(bottom_widget)
-        splitter.setSizes([400, 300])
-        
-        # 状态栏
-        self.statusBarWidget = QStatusBar()
-        self.setStatusBar(self.statusBarWidget)
-        
-        main_layout.addWidget(splitter)
+        # 添加左右布局到主布局
+        main_layout.addWidget(left_widget)
+        main_layout.addWidget(right_widget)
         
         self.setCentralWidget(central_widget)
-        self.apply_theme(self._get_saved_theme())
     
     def _load_file_text(self, filename: str) -> str:
         """读取项目根目录文本文件（SOUL/USER/AGENTS）"""
@@ -713,152 +935,372 @@ class AICADPlugin(QMainWindow):
         """应用主题到主界面（不改变业务逻辑）"""
         theme = theme_name or "默认"
 
+        # 参考腾讯电脑管家风格的QSS
         light_qss = """
+            /* 主窗口 */
             QMainWindow {
-                background-color: #f5f6fa;
-                border: 2px solid #dcdde1;
-                border-radius: 15px;
+                background-color: #f0f2f5;
+                border: 1px solid #d0d7de;
+                border-radius: 8px;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
             }
+            
+            /* 通用控件 */
             QWidget {
                 background-color: #ffffff;
-                border-radius: 8px;
             }
+            
+            /* 标签 */
+            QLabel {
+                color: #333333;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            
+            /* 文本编辑框 */
             QTextEdit {
                 background-color: #ffffff;
-                border: 2px solid #dcdde1;
-                border-radius: 8px;
-                padding: 8px;
-                font-size: 13px;
-                color: #2c3e50;
+                border: 1px solid #d0d7de;
+                border-radius: 4px;
+                padding: 10px;
+                font-size: 14px;
+                color: #333333;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QTextEdit:focus { border: 2px solid #3498db; }
+            
+            QTextEdit:focus {
+                border: 1px solid #1890ff;
+                outline: none;
+            }
+            
+            /* 单行输入框 */
             QLineEdit {
                 background-color: #ffffff;
-                border: 2px solid #dcdde1;
-                border-radius: 8px;
-                padding: 10px;
-                font-size: 13px;
-                color: #2c3e50;
+                border: 1px solid #d0d7de;
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-size: 14px;
+                color: #333333;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QLineEdit:focus { border: 2px solid #3498db; }
+            
+            QLineEdit:focus {
+                border: 1px solid #1890ff;
+                outline: none;
+            }
+            
+            /* 按钮 */
             QPushButton {
-                background-color: #3498db;
+                background-color: #1890ff;
                 color: white;
                 border: none;
-                border-radius: 8px;
+                border-radius: 4px;
                 padding: 8px 16px;
-                font-size: 13px;
-                font-weight: bold;
+                font-size: 14px;
+                font-weight: 500;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QPushButton:hover { background-color: #2980b9; }
-            QPushButton:pressed { background-color: #1f6dad; }
+            
+            QPushButton:hover {
+                background-color: #40a9ff;
+            }
+            
+            QPushButton:pressed {
+                background-color: #096dd9;
+            }
+            
+            /* 下拉框 */
             QComboBox {
                 background-color: #ffffff;
-                border: 2px solid #dcdde1;
-                border-radius: 8px;
-                padding: 8px;
-                font-size: 13px;
-                color: #2c3e50;
+                border: 1px solid #d0d7de;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 14px;
+                color: #333333;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QComboBox:focus { border: 2px solid #3498db; }
-            QComboBox::drop-down { border: none; width: 30px; }
+            
+            QComboBox:focus {
+                border: 1px solid #1890ff;
+                outline: none;
+            }
+            
+            QComboBox::drop-down {
+                border: none;
+                width: 24px;
+            }
+            
             QComboBox::down-arrow {
                 image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 8px solid #3498db;
-                margin-right: 10px;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid #666666;
+                margin-right: 8px;
             }
+            
+            /* 树控件 */
             QTreeWidget {
                 background-color: #ffffff;
-                border: 2px solid #dcdde1;
-                border-radius: 8px;
-                font-size: 12px;
-                color: #2c3e50;
+                border: 1px solid #d0d7de;
+                border-radius: 4px;
+                font-size: 14px;
+                color: #333333;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QTreeWidget::item { padding: 5px; border-radius: 4px; }
-            QTreeWidget::item:selected { background-color: #3498db; color: white; }
-            QTreeWidget::item:hover { background-color: #ecf0f1; }
+            
+            QTreeWidget::header {
+                background-color: #f5f5f5;
+                font-weight: 500;
+                font-size: 13px;
+                color: #666666;
+                border-bottom: 1px solid #d0d7de;
+            }
+            
+            QTreeWidget::item {
+                padding: 6px;
+            }
+            
+            QTreeWidget::item:selected {
+                background-color: #e6f7ff;
+                color: #1890ff;
+            }
+            
+            QTreeWidget::item:hover {
+                background-color: #f0f0f0;
+            }
+            
+            /* 状态栏 */
             QStatusBar {
-                background-color: #2c3e50;
-                color: #ecf0f1;
-                border-radius: 0px;
+                background-color: #f5f5f5;
+                color: #666666;
+                border-top: 1px solid #d0d7de;
                 font-size: 12px;
-                padding: 5px;
+                padding: 6px 12px;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QSplitter::handle { background-color: #dcdde1; height: 3px; }
+            
+            /* 分割器 */
+            QSplitter::handle {
+                background-color: #e0e0e0;
+                height: 4px;
+                border-radius: 2px;
+            }
+            
+            QSplitter::handle:hover {
+                background-color: #d0d0d0;
+            }
+            
+            /* 工具按钮 */
+            QToolButton {
+                background: transparent;
+                color: #333333;
+                border: none;
+                padding: 6px 12px;
+                font-size: 14px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                border-radius: 4px;
+            }
+            
+            QToolButton:hover {
+                background-color: #f0f0f0;
+            }
+            
+            /* 菜单 */
+            QMenu {
+                background-color: #ffffff;
+                color: #333333;
+                border: 1px solid #d0d7de;
+                border-radius: 4px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+            }
+            
+            QMenu::item {
+                padding: 8px 20px;
+                border-radius: 4px;
+            }
+            
+            QMenu::item:selected {
+                background-color: #1890ff;
+                color: white;
+            }
         """
 
+        # 深色主题
         dark_qss = """
+            /* 主窗口 */
             QMainWindow {
-                background-color: #14171c;
-                border: 1px solid #2d333b;
-                border-radius: 12px;
+                background-color: #1a1a1a;
+                border: 1px solid #333333;
+                border-radius: 8px;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
             }
+            
+            /* 通用控件 */
             QWidget {
-                background-color: #1b2129;
-                color: #d6dbe3;
-                border-radius: 8px;
+                background-color: #252525;
+                color: #e0e0e0;
             }
-            QLabel { color: #d6dbe3; background: transparent; }
+            
+            /* 标签 */
+            QLabel {
+                color: #e0e0e0;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            
+            /* 文本编辑框 */
             QTextEdit {
-                background-color: #11161d;
-                border: 1px solid #2f3742;
-                border-radius: 8px;
-                padding: 8px;
-                font-size: 13px;
-                color: #d6dbe3;
+                background-color: #333333;
+                border: 1px solid #444444;
+                border-radius: 4px;
+                padding: 10px;
+                font-size: 14px;
+                color: #e0e0e0;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QTextEdit:focus { border: 1px solid #4b84ff; }
+            
+            QTextEdit:focus {
+                border: 1px solid #1890ff;
+                outline: none;
+            }
+            
+            /* 单行输入框 */
             QLineEdit {
-                background-color: #11161d;
-                border: 1px solid #2f3742;
-                border-radius: 8px;
-                padding: 8px;
-                font-size: 13px;
-                color: #d6dbe3;
+                background-color: #333333;
+                border: 1px solid #444444;
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-size: 14px;
+                color: #e0e0e0;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QLineEdit:focus { border: 1px solid #4b84ff; }
+            
+            QLineEdit:focus {
+                border: 1px solid #1890ff;
+                outline: none;
+            }
+            
+            /* 按钮 */
             QPushButton {
-                background-color: #2e6be6;
-                color: #f5f8ff;
+                background-color: #1890ff;
+                color: white;
                 border: none;
-                border-radius: 8px;
-                padding: 8px 14px;
-                font-size: 13px;
-                font-weight: 600;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-size: 14px;
+                font-weight: 500;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QPushButton:hover { background-color: #3b78f0; }
-            QPushButton:pressed { background-color: #285fcd; }
+            
+            QPushButton:hover {
+                background-color: #40a9ff;
+            }
+            
+            QPushButton:pressed {
+                background-color: #096dd9;
+            }
+            
+            /* 下拉框 */
             QComboBox {
-                background-color: #11161d;
-                border: 1px solid #2f3742;
-                border-radius: 8px;
-                padding: 6px 8px;
-                color: #d6dbe3;
+                background-color: #333333;
+                border: 1px solid #444444;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 14px;
+                color: #e0e0e0;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
+            
+            QComboBox:focus {
+                border: 1px solid #1890ff;
+                outline: none;
+            }
+            
+            /* 树控件 */
             QTreeWidget {
-                background-color: #11161d;
-                border: 1px solid #2f3742;
-                border-radius: 8px;
-                color: #d6dbe3;
+                background-color: #333333;
+                border: 1px solid #444444;
+                border-radius: 4px;
+                font-size: 14px;
+                color: #e0e0e0;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QTreeWidget::item:selected { background-color: #2e6be6; color: #ffffff; }
-            QTreeWidget::item:hover { background-color: #232b36; }
+            
+            QTreeWidget::header {
+                background-color: #2a2a2a;
+                font-weight: 500;
+                font-size: 13px;
+                color: #b0b0b0;
+                border-bottom: 1px solid #444444;
+            }
+            
+            QTreeWidget::item {
+                padding: 6px;
+            }
+            
+            QTreeWidget::item:selected {
+                background-color: #1890ff;
+                color: white;
+            }
+            
+            QTreeWidget::item:hover {
+                background-color: #3a3a3a;
+            }
+            
+            /* 状态栏 */
             QStatusBar {
-                background-color: #0f141a;
-                color: #d6dbe3;
-                border-top: 1px solid #2a313d;
+                background-color: #1a1a1a;
+                color: #b0b0b0;
+                border-top: 1px solid #333333;
                 font-size: 12px;
-                padding: 4px;
+                padding: 6px 12px;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QSplitter::handle { background-color: #2a313d; height: 3px; }
+            
+            /* 分割器 */
+            QSplitter::handle {
+                background-color: #444444;
+                height: 4px;
+                border-radius: 2px;
+            }
+            
+            QSplitter::handle:hover {
+                background-color: #555555;
+            }
+            
+            /* 工具按钮 */
+            QToolButton {
+                background: transparent;
+                color: #e0e0e0;
+                border: none;
+                padding: 6px 12px;
+                font-size: 14px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                border-radius: 4px;
+            }
+            
+            QToolButton:hover {
+                background-color: #3a3a3a;
+            }
+            
+            /* 菜单 */
             QMenu {
-                background-color: #1b2129;
-                color: #d6dbe3;
-                border: 1px solid #2f3742;
+                background-color: #252525;
+                color: #e0e0e0;
+                border: 1px solid #444444;
+                border-radius: 4px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
             }
-            QMenu::item:selected { background-color: #2e6be6; color: #ffffff; }
+            
+            QMenu::item {
+                padding: 8px 20px;
+                border-radius: 4px;
+            }
+            
+            QMenu::item:selected {
+                background-color: #1890ff;
+                color: white;
+            }
         """
 
         if theme == "深色":
@@ -918,6 +1360,19 @@ class AICADPlugin(QMainWindow):
             item = QTreeWidgetItem([name, cmd])
             zxcad_item.addChild(item)
         self.function_tree.addTopLevelItem(zxcad_item)
+        
+        # 智能技能
+        skills_item = QTreeWidgetItem(["智能技能", "AI辅助功能"])
+        skills_functions = [
+            ("CAD绘图", "cad_drawing"),
+            ("知识库查询", "kb_query"),
+            ("文件搜索", "file_search"),
+            ("ERP查询", "erp_query")
+        ]
+        for name, skill in skills_functions:
+            item = QTreeWidgetItem([name, skill])
+            skills_item.addChild(item)
+        self.function_tree.addTopLevelItem(skills_item)
         
         # 展开所有节点
         self.function_tree.expandAll()
@@ -1002,21 +1457,34 @@ class AICADPlugin(QMainWindow):
             self.send_button.setFixedSize(80, 36)
             self.send_button.setStyleSheet("""
                 QPushButton {
-                    background-color: #e74c3c;
+                    background-color: #ff4d4f;
                     color: white;
                     border: none;
-                    border-radius: 8px;
+                    border-radius: 4px;
                     font-size: 13px;
                     font-weight: bold;
                 }
                 QPushButton:hover {
-                    background-color: #c0392b;
+                    background-color: #cf1322;
                 }
             """)
         else:
-            self.send_button.setText("发送 ➤")
+            self.send_button.setText("发送")
             self.send_button.setFixedWidth(80)
-            self.send_button.setStyleSheet("")
+            self.send_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #07c160;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 10px 20px;
+                    font-size: 14px;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    background-color: #05a650;
+                }
+            """)
         self.input_field.setEnabled(not is_processing)
     
     def add_chat_message(self, sender, message):
@@ -1100,6 +1568,28 @@ class AICADPlugin(QMainWindow):
             if len(self._chat_history) > self._chat_history_max:
                 self._chat_history = self._chat_history[-self._chat_history_max:]
 
+            # 技能系统处理
+            skill_name = "cad_drawing"  # 默认使用CAD绘图技能
+            # 根据用户输入判断使用哪个技能
+            if any(keyword in command for keyword in ["查询", "搜索", "文档", "标准"]):
+                skill_name = "kb_query"
+            elif any(keyword in command for keyword in ["文件", "查找", "定位"]):
+                skill_name = "file_search"
+            elif any(keyword in command for keyword in ["ERP", "系统", "数据"]):
+                skill_name = "erp_query"
+            
+            # 获取技能信息
+            skill_info = self.skill_manager.get_skill(skill_name)
+            if skill_info:
+                # 使用提示词管理器生成提示词
+                prompt_context = {
+                    "skill_prompt": skill_info.get("prompt", ""),
+                    "user_input": command
+                }
+                custom_prompt = self.prompt_manager.get_prompt(skill_name, prompt_context)
+                print(f"[Skill System] 使用技能: {skill_name}")
+                print(f"[Skill System] 生成提示词长度: {len(custom_prompt)}")
+            
             # 主流程编排（Phase 2 起步）：优先处理 KB_QA，CAD 命令继续走既有模型链路
             cfg = self._load_runtime_config()
             db_cfg = cfg.get("database", {}) if isinstance(cfg, dict) else {}
@@ -1194,7 +1684,8 @@ class AICADPlugin(QMainWindow):
                 "soul": self._load_file_text("SOUL.md"),
                 "user_profile": self._load_file_text("USER.md"),
                 "agent_rules": self._load_file_text("AGENTS.md"),
-                "instruction": "优先理解用户需求，给出完整建议；如用户询问公司内部标准，优先引导走公司知识库。"
+                "instruction": "优先理解用户需求，给出完整建议；如用户询问公司内部标准，优先引导走公司知识库。",
+                "custom_prompt": custom_prompt if 'custom_prompt' in locals() else ""
             }
 
             params = getattr(self.ai_model, "get_request_params", None)
@@ -2434,10 +2925,46 @@ class AICADPlugin(QMainWindow):
     
     def execute_function(self, item, column):
         """执行功能节点"""
+        function_name = item.text(0)
         command = item.text(1)
-        if command:
+        
+        if command in ["LINE", "CIRCLE", "RECTANG", "MOVE", "COPY", "ERASE"] or command.startswith("ZXCAD-"):
+            # 执行AutoCAD命令
             self.execute_autocad_command(command)
-            self.add_chat_message("系统", f"执行功能: {item.text(0)}")
+            self.add_chat_message("系统", f"执行功能: {function_name}")
+        elif command in ["cad_drawing", "kb_query", "file_search", "erp_query"]:
+            # 执行智能技能
+            self.add_chat_message("系统", f"执行智能技能: {function_name}")
+            try:
+                # 根据技能类型执行不同的操作
+                if command == "cad_drawing":
+                    params = {"drawing_type": "circle", "dimensions": {"radius": 50}, "position": {"x": 0, "y": 0}}
+                elif command == "kb_query":
+                    params = {"query": "AutoCAD基本命令"}
+                elif command == "file_search":
+                    params = {"search_term": "dwg", "search_path": "."}
+                elif command == "erp_query":
+                    params = {"query_type": "inventory", "query_params": {"category": "software"}}
+                
+                result = self.skill_manager.execute_skill(command, params)
+                if result.get("success"):
+                    self.add_chat_message("系统", f"技能执行成功: {result.get('message')}")
+                    if "commands" in result:
+                        self.add_chat_message("系统", f"生成的命令: {result.get('commands')}")
+                    if "results" in result:
+                        for i, item in enumerate(result.get('results', [])):
+                            if "title" in item:
+                                self.add_chat_message("系统", f"结果 {i+1}: {item.get('title')} - {item.get('content')}")
+                            elif "path" in item:
+                                self.add_chat_message("系统", f"结果 {i+1}: {item.get('path')} ({item.get('size')})")
+                            elif "item" in item:
+                                self.add_chat_message("系统", f"结果 {i+1}: {item.get('item')} - {item.get('description')} (数量: {item.get('quantity')})")
+                else:
+                    self.add_chat_message("系统", f"技能执行失败: {result.get('message')}")
+            except Exception as e:
+                self.add_chat_message("系统", f"技能执行失败: {str(e)}")
+        else:
+            self.add_chat_message("系统", f"未知命令: {command}")
     
     def execute_autocad_command(self, command, delay=0.5):
         """执行AutoCAD命令；delay 为发送后等待时间（秒），队列执行时用较短 delay 便于响应停止"""
@@ -2538,7 +3065,7 @@ class AICADPlugin(QMainWindow):
 
     def update_status_bar(self, message):
         """更新状态栏"""
-        self.statusBarWidget.showMessage(message)
+        self.statusBar().showMessage(message)
 
     # ===== IPC Bridge 回调（可能来自非UI线程） =====
     def _bridge_show(self):
