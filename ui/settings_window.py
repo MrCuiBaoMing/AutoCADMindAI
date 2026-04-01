@@ -16,7 +16,46 @@ from PyQt6.QtWidgets import (
     QSpinBox, QMessageBox, QTabWidget, QWidget, QCheckBox,
     QAbstractItemView
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QRect
+from PyQt6.QtGui import QPainter, QColor, QPen
+
+class CheckableCheckBox(QCheckBox):
+    """自定义复选框，带对号显示"""
+    
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+    
+    def paintEvent(self, event):
+        """绘制事件"""
+        super().paintEvent(event)
+        
+        if self.isChecked():
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            # 获取复选框指示器的矩形区域
+            rect_width = 16
+            rect_height = 16
+            x = 0
+            y = (self.height() - rect_height) // 2
+            
+            # 绘制对号
+            pen = QPen(QColor(255, 255, 255), 2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            
+            # 对号的三个点
+            from PyQt6.QtCore import QLineF
+            
+            # 绘制对号路径
+            p1 = QLineF(x + 4, y + 8, x + 7, y + 11)
+            p2 = QLineF(x + 7, y + 11, x + 12, y + 5)
+            
+            painter.drawLine(p1)
+            painter.drawLine(p2)
+            
+            painter.end()
 
 class ModelConfig:
     """模型配置类"""
@@ -204,14 +243,15 @@ class SettingsWindow(QDialog):
                 background-color: #e9e9e9;
             }
             QPushButton {
-                min-height: 32px;
-                padding: 6px 14px;
+                min-height: 28px;
+                padding: 4px 12px;
                 border-radius: 4px;
                 border: none;
                 background: #07c160;
                 color: #ffffff;
                 font-family: 'Microsoft YaHei', Arial, sans-serif;
                 font-weight: 500;
+                font-size: 13px;
             }
             QPushButton:hover {
                 background: #05a650;
@@ -222,17 +262,48 @@ class SettingsWindow(QDialog):
             QCheckBox {
                 color: #333333;
                 font-family: 'Microsoft YaHei', Arial, sans-serif;
+                spacing: 6px;
             }
             QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                border: 1px solid #e0e0e0;
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 1px solid #d0d0d0;
                 background: #ffffff;
+            }
+            QCheckBox::indicator:hover {
+                border: 1px solid #07c160;
             }
             QCheckBox::indicator:checked {
                 background: #07c160;
                 border: 1px solid #07c160;
+            }
+            QCheckBox::indicator:unchecked {
+                background: #ffffff;
+                border: 1px solid #d0d0d0;
+            }
+            QRadioButton {
+                color: #333333;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+                spacing: 6px;
+            }
+            QRadioButton::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border: 1px solid #d0d0d0;
+                background: #ffffff;
+            }
+            QRadioButton::indicator:hover {
+                border: 1px solid #07c160;
+            }
+            QRadioButton::indicator:checked {
+                background: #ffffff;
+                border: 2px solid #07c160;
+            }
+            QRadioButton::indicator:unchecked {
+                background: #ffffff;
+                border: 1px solid #d0d0d0;
             }
             QScrollBar:vertical {
                 width: 6px;
@@ -367,7 +438,7 @@ class SettingsWindow(QDialog):
         self.command_delay_spin.setValue(1)
         self.command_delay_spin.setSuffix(" 秒")
         
-        self.auto_connect_check = QCheckBox("启动时自动连接AutoCAD")
+        self.auto_connect_check = CheckableCheckBox("启动时自动连接AutoCAD")
         
         form_layout.addRow("连接超时:", self.connection_timeout_spin)
         form_layout.addRow("命令延迟:", self.command_delay_spin)
@@ -393,7 +464,7 @@ class SettingsWindow(QDialog):
         form_layout.setHorizontalSpacing(14)
         form_layout.setVerticalSpacing(12)
 
-        self.db_enable_check = QCheckBox("启用数据库配置中心（优先从数据库读取配置）")
+        self.db_enable_check = CheckableCheckBox("启用数据库配置中心（优先从数据库读取配置）")
 
         self.db_connection_string_edit = QLineEdit()
         self.db_connection_string_edit.setPlaceholderText("DRIVER={ODBC Driver 17 for SQL Server};SERVER=127.0.0.1,1433;DATABASE=AICAD_KB;UID=sa;PWD=***")
@@ -426,7 +497,7 @@ class SettingsWindow(QDialog):
         enable_group = QGroupBox("网络搜索功能")
         enable_layout = QVBoxLayout()
 
-        self.web_search_enable_check = QCheckBox("启用网络搜索功能")
+        self.web_search_enable_check = CheckableCheckBox("启用网络搜索功能")
         self.web_search_enable_check.setToolTip("启用后，AI 可以在需要时搜索互联网获取最新信息")
         enable_layout.addWidget(self.web_search_enable_check)
 
@@ -465,7 +536,7 @@ class SettingsWindow(QDialog):
         cache_form.setHorizontalSpacing(14)
         cache_form.setVerticalSpacing(12)
 
-        self.web_search_cache_enable_check = QCheckBox("启用缓存")
+        self.web_search_cache_enable_check = CheckableCheckBox("启用缓存")
         self.web_search_cache_enable_check.setChecked(True)
         self.web_search_cache_enable_check.setToolTip("启用缓存可以减少重复搜索，提高响应速度")
 
