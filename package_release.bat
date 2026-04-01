@@ -43,6 +43,7 @@ copy /y "ai_config.json" "%DIST%\" >nul
 if exist "ui" xcopy /e /i /y "ui" "%DIST%\ui\" >nul
 if exist "core" xcopy /e /i /y "core" "%DIST%\core\" >nul
 if exist "connectors" xcopy /e /i /y "connectors" "%DIST%\connectors\" >nul
+if exist "personalities" xcopy /e /i /y "personalities" "%DIST%\personalities\" >nul
 
 (
   echo AutoCADMindAI package

@@ -189,7 +189,8 @@ class OpenAIModel(AIModel):
             response.raise_for_status()
             return self.parse_response(response.content)
         except Exception as e:
-            return {"response": f"处理失败: {str(e)}", "commands": []}
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            return {"response": f"处理失败: {error_msg}", "commands": []}
 
 class LocalModel(AIModel):
     """本地模型实现"""
@@ -302,7 +303,8 @@ class AzureOpenAIModel(AIModel):
             response.raise_for_status()
             return self.parse_response(response.content)
         except Exception as e:
-            return {"response": f"处理失败: {str(e)}", "commands": []}
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            return {"response": f"处理失败: {error_msg}", "commands": []}
 
 class LMStudioModel(AIModel):
     """LM Studio本地模型实现"""
@@ -653,7 +655,7 @@ class LMStudioModel(AIModel):
         print(f"[LMStudioModel] API URL: {api_url}")
         print(f"[LMStudioModel] 模型: {self.model_name}")
         print(f"[LMStudioModel] 消息数: {len(messages)}")
-        print(f"[LMStudioModel] 请求数据: {json.dumps(data, ensure_ascii=False, indent=2)}")
+        print(f"[LMStudioModel] 请求数据: {json.dumps(data, ensure_ascii=True, indent=2)}")
 
         return api_url, headers, json.dumps(data, ensure_ascii=False).encode("utf-8")
 
@@ -818,9 +820,11 @@ class LMStudioModel(AIModel):
             # 若未返回JSON，直接按普通聊天文本返回，避免误拦截正常回答
             return {"intent": "chat", "response": assistant_message, "commands": []}
         except json.JSONDecodeError as e:
-            return {"response": f"JSON解析失败: {str(e)}", "commands": []}
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            return {"response": f"JSON解析失败: {error_msg}", "commands": []}
         except Exception as e:
-            return {"response": f"处理失败: {str(e)}", "commands": []}
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            return {"response": f"处理失败: {error_msg}", "commands": []}
 
     def _get_timeout(self) -> int:
         """根据端点类型返回适当的超时时间（秒）"""
@@ -915,7 +919,8 @@ class LMStudioModel(AIModel):
         except requests.exceptions.ConnectionError:
             return {"response": "无法连接到模型服务，请确认服务已启动", "commands": []}
         except Exception as e:
-            return {"response": f"处理失败: {str(e)}", "commands": []}
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            return {"response": f"处理失败: {error_msg}", "commands": []}
 
 def get_ai_model(model_type: str = "local", **kwargs) -> AIModel:
     """获取AI模型实例"""

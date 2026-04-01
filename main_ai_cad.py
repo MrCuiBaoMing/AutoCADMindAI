@@ -166,7 +166,8 @@ class AICADPlugin(QMainWindow):
             self.bridge.start()
             self.add_chat_message("系统", "[网络] 本地桥接服务已启动: http://127.0.0.1:8765")
         except Exception as e:
-            self.add_chat_message("系统", f"[警告] 桥接服务启动失败: {str(e)}")
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            self.add_chat_message("系统", f"[警告] 桥接服务启动失败: {error_msg}")
 
         # 延后执行可能较慢的初始化，确保 bridge 可被 AIMIND 快速探活
         self.ai_model = None
@@ -271,7 +272,8 @@ class AICADPlugin(QMainWindow):
         except Exception as e:
             self.status_indicator.set_status("disconnected")
             self.status_label.setText("连接失败")
-            self.update_status_bar(f"✗ 连接失败: {str(e)}")
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            self.update_status_bar(f"✗ 连接失败: {error_msg}")
     
     def init_ai_model(self):
         """初始化AI模型"""
@@ -310,7 +312,8 @@ class AICADPlugin(QMainWindow):
 
         except Exception as e:
             self.ai_model = get_ai_model("local")
-            self.update_status_bar(f"AI模型初始化失败，使用本地模型: {str(e)}")
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            self.update_status_bar(f"AI模型初始化失败，使用本地模型: {error_msg}")
 
     def _init_web_retriever(self):
         """初始化 Web 检索器"""
@@ -438,8 +441,9 @@ class AICADPlugin(QMainWindow):
 
                 self.add_chat_message("系统", f"已切换到模型: {model_name}{hint}")
             except Exception as e:
-                self.update_status_bar(f"模型切换失败: {str(e)}")
-                self.add_chat_message("系统", f"模型切换失败: {str(e)}")
+                error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+                self.update_status_bar(f"模型切换失败: {error_msg}")
+                self.add_chat_message("系统", f"模型切换失败: {error_msg}")
     
     def on_personality_changed(self, index):
         """性格切换事件"""
@@ -1732,10 +1736,11 @@ class AICADPlugin(QMainWindow):
 
         except Exception as e:
             rid = int(request_id or self._active_request_id)
-            self._set_request_state(rid, "FAILED", reason=str(e)[:300])
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            self._set_request_state(rid, "FAILED", reason=error_msg[:300])
             self.is_processing = False
             self.set_send_button_state(False)
-            self.add_chat_message("系统", f"[错误] 处理失败: {str(e)}")
+            self.add_chat_message("系统", f"[错误] 处理失败: {error_msg}")
             self.update_status_bar("[错误] 处理失败")
             self.reset_status()
 
@@ -1766,11 +1771,13 @@ class AICADPlugin(QMainWindow):
                 self._set_request_state(request_id, "GENERATED", intent=result.get("intent", "chat"))
             self.on_ai_result(result)
         except Exception as e:
-            print(f"[Network Exception] {str(e)}")
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            print(f"[Network Exception] {error_msg}")
             import traceback
             traceback.print_exc()
             if not self._user_requested_stop:
-                self.on_ai_result({"response": f"处理响应失败: {str(e)}", "commands": [], "request_id": self._active_request_id})
+                error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+                self.on_ai_result({"response": f"处理响应失败: {error_msg}", "commands": [], "request_id": self._active_request_id})
     
     def on_ai_finished(self):
         """AI 线程结束（此时可能仍在执行 CAD 命令，不在这里恢复按钮）"""
@@ -2609,10 +2616,19 @@ class AICADPlugin(QMainWindow):
             # 【调试日志】打印 AI 返回的完整结果
             print(f"\n[DEBUG] AI 返回结果:")
             print(f"  intent: {intent}")
-            print(f"  response: {response_text[:100] if response_text else 'None'}...")
+            try:
+                print(f"  response: {response_text[:100] if response_text else 'None'}...")
+            except Exception as e:
+                safe_response = str(response_text[:100] if response_text else 'None').encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+                print(f"  response: {safe_response}...")
             print(f"  drawing_commands: {result.get('drawing_commands', [])}")
             print(f"  commands: {result.get('commands', [])}")
-            print(f"  完整结果: {result}")
+            try:
+                print(f"  完整结果: {result}")
+            except Exception as e:
+                import json
+                safe_result = json.dumps(result, ensure_ascii=True, default=str)
+                print(f"  完整结果: {safe_result}")
 
             # 【工具调用】处理 AI 返回的工具调用
             if intent == "tool_call":
@@ -2880,7 +2896,8 @@ class AICADPlugin(QMainWindow):
 
             self.update_status_bar("[OK] 处理完成")
         except Exception as e:
-            self.add_chat_message("系统", f"[错误] 处理AI结果时出错: {str(e)}")
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            self.add_chat_message("系统", f"[错误] 处理AI结果时出错: {error_msg}")
             self.update_status_bar("[错误] 处理出错")
         finally:
             intent = result.get('intent', 'chat') if isinstance(result, dict) else 'chat'
@@ -2933,7 +2950,8 @@ class AICADPlugin(QMainWindow):
             self.execute_autocad_command(command)
             self.add_chat_message("系统", f"执行命令: {command}")
         except Exception as e:
-            self.add_chat_message("系统", f"命令执行失败: {str(e)}")
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            self.add_chat_message("系统", f"命令执行失败: {error_msg}")
     
     def execute_function(self, item, column):
         """执行功能节点"""
@@ -2974,7 +2992,8 @@ class AICADPlugin(QMainWindow):
                 else:
                     self.add_chat_message("系统", f"技能执行失败: {result.get('message')}")
             except Exception as e:
-                self.add_chat_message("系统", f"技能执行失败: {str(e)}")
+                error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+                self.add_chat_message("系统", f"技能执行失败: {error_msg}")
         else:
             self.add_chat_message("系统", f"未知命令: {command}")
     
@@ -3028,12 +3047,14 @@ class AICADPlugin(QMainWindow):
         try:
             self.connect_to_acad()
         except Exception as e:
-            self.add_chat_message("系统", f"[警告] AutoCAD 连接初始化失败: {str(e)}")
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            self.add_chat_message("系统", f"[警告] AutoCAD 连接初始化失败: {error_msg}")
 
         try:
             self.init_ai_model()
         except Exception as e:
-            self.add_chat_message("系统", f"[警告] AI 模型初始化失败: {str(e)}")
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            self.add_chat_message("系统", f"[警告] AI 模型初始化失败: {error_msg}")
 
         self.update_status_bar("就绪 - 输入指令控制AutoCAD")
 
@@ -3073,7 +3094,8 @@ class AICADPlugin(QMainWindow):
         except Exception as e:
             self.db_status_indicator.set_status("disconnected")
             self.db_status_label.setText("书库连接失败")
-            self.add_chat_message("系统", f"[警告] 知识库数据库连接失败: {str(e)}")
+            error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            self.add_chat_message("系统", f"[警告] 知识库数据库连接失败: {error_msg}")
 
     def update_status_bar(self, message):
         """更新状态栏"""
@@ -3218,8 +3240,9 @@ class AIProcessingThread(QThread):
                 self.result_ready.emit({"response": "已取消", "commands": [], "request_id": int(self.request_id or 0)})
         except Exception as e:
             if not self._stopped:
+                error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
                 self.result_ready.emit({
-                    "response": f"处理失败: {str(e)}",
+                    "response": f"处理失败: {error_msg}",
                     "commands": [],
                     "request_id": int(self.request_id or 0)
                 })
