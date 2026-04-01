@@ -176,15 +176,15 @@ class AICADPlugin(QMainWindow):
         self.update_status_bar("启动中 - 正在初始化 AutoCAD 与 AI 模型...")
     
     def set_window_properties(self):
-        """设置窗口属性：置顶、无边框、不透明"""
+        """设置窗口属性：置顶、无边框、圆角"""
         # 设置窗口置顶
         self.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint |  # 始终置顶
             Qt.WindowType.FramelessWindowHint     # 无边框
         )
 
-        # 关闭半透明背景，改为不透明
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        # 启用半透明背景以支持圆角
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         # 设置窗口不透明（1.0为完全不透明）
         self.setWindowOpacity(1.0)
@@ -195,6 +195,22 @@ class AICADPlugin(QMainWindow):
         # 保存正常大小和位置
         self.normal_geometry = self.geometry()
         self.is_maximized = False
+    
+    def paintEvent(self, event):
+        """绘制窗口背景，实现圆角效果"""
+        from PyQt6.QtGui import QPainter, QColor, QPainterPath
+        from PyQt6.QtCore import QRectF
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # 创建圆角矩形路径
+        path = QPainterPath()
+        rect = QRectF(self.rect())
+        path.addRoundedRect(rect, 8, 8)
+        
+        # 填充背景色
+        painter.fillPath(path, QColor(242, 242, 242))  # #f2f2f2
     
     def mousePressEvent(self, event):
         """鼠标按下事件 - 用于拖动窗口"""
@@ -464,9 +480,8 @@ class AICADPlugin(QMainWindow):
         left_widget.setFixedWidth(180)
         left_widget.setStyleSheet("""
             QWidget {
-                background-color: #f2f2f2;
+                background-color: transparent;
                 border-right: 1px solid #e0e0e0;
-                border-bottom-left-radius: 8px;
             }
         """)
         left_layout = QVBoxLayout(left_widget)
@@ -477,10 +492,9 @@ class AICADPlugin(QMainWindow):
         search_widget = QWidget()
         search_widget.setStyleSheet("""
             QWidget {
-                background-color: #f2f2f2;
+                background-color: transparent;
                 padding: 10px;
                 border-bottom: 1px solid #e0e0e0;
-                border-top-left-radius: 8px;
             }
         """)
         search_layout = QHBoxLayout(search_widget)
@@ -512,7 +526,7 @@ class AICADPlugin(QMainWindow):
         self.function_tree.setHeaderHidden(True)
         self.function_tree.setStyleSheet("""
             QTreeWidget {
-                background-color: #f2f2f2;
+                background-color: transparent;
                 border: none;
                 font-size: 14px;
                 color: #333333;
@@ -532,7 +546,7 @@ class AICADPlugin(QMainWindow):
             /* 滚动条样式 */
             QScrollBar:vertical {
                 width: 6px;
-                background: #f2f2f2;
+                background: transparent;
                 margin: 0px;
             }
             QScrollBar::handle:vertical {
@@ -560,7 +574,7 @@ class AICADPlugin(QMainWindow):
         right_widget = QWidget()
         right_widget.setStyleSheet("""
             QWidget {
-                background-color: #ffffff;
+                background-color: transparent;
             }
         """)
         right_layout = QVBoxLayout(right_widget)
@@ -571,10 +585,9 @@ class AICADPlugin(QMainWindow):
         right_title_widget = QWidget()
         right_title_widget.setStyleSheet("""
             QWidget {
-                background-color: #ffffff;
+                background-color: transparent;
                 border-bottom: 1px solid #e0e0e0;
                 padding: 12px 20px;
-                border-top-right-radius: 8px;
             }
         """)
         right_title_layout = QHBoxLayout(right_title_widget)
@@ -680,13 +693,13 @@ class AICADPlugin(QMainWindow):
         control_widget = QWidget()
         control_widget.setStyleSheet("""
             QWidget {
-                background-color: #f8f9fa;
+                background-color: transparent;
                 border-bottom: 1px solid #e0e0e0;
-                padding: 10px 20px;
+                padding: 10px 25px;
             }
         """)
         control_layout = QHBoxLayout(control_widget)
-        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setContentsMargins(0, 0, 10, 0)
         control_layout.setSpacing(15)
         
         # 模型选择
@@ -805,7 +818,7 @@ class AICADPlugin(QMainWindow):
         self.chat_display.setPlaceholderText("💬 开始与AI助手对话...")
         self.chat_display.setStyleSheet("""
             QTextEdit {
-                background-color: #e6f7ff;
+                background-color: transparent;
                 border: none;
                 padding: 20px;
                 font-size: 14px;
@@ -819,14 +832,13 @@ class AICADPlugin(QMainWindow):
         input_widget = QWidget()
         input_widget.setStyleSheet("""
             QWidget {
-                background-color: #ffffff;
+                background-color: transparent;
                 border-top: 1px solid #e0e0e0;
-                padding: 10px 20px;
-                border-bottom-right-radius: 8px;
+                padding: 15px 25px;
             }
         """)
         input_layout = QHBoxLayout(input_widget)
-        input_layout.setContentsMargins(0, 0, 0, 0)
+        input_layout.setContentsMargins(5, 5, 5, 5)
         input_layout.setSpacing(10)
         
         self.input_field = QLineEdit()
@@ -939,14 +951,13 @@ class AICADPlugin(QMainWindow):
         """应用主题到主界面（不改变业务逻辑）"""
         theme = theme_name or "默认"
 
-        # 参考腾讯电脑管家风格的QSS
+        # 微信风格的QSS
         light_qss = """
             /* 主窗口 */
             QMainWindow {
-                background-color: #f0f2f5;
-                border: 1px solid #d0d7de;
+                background-color: #f2f2f2;
+                border: 1px solid #e0e0e0;
                 border-radius: 8px;
-                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
             }
             
             /* 通用控件 */
@@ -957,74 +968,74 @@ class AICADPlugin(QMainWindow):
             /* 标签 */
             QLabel {
                 color: #333333;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             /* 文本编辑框 */
             QTextEdit {
                 background-color: #ffffff;
-                border: 1px solid #d0d7de;
+                border: 1px solid #e0e0e0;
                 border-radius: 4px;
                 padding: 10px;
                 font-size: 14px;
                 color: #333333;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QTextEdit:focus {
-                border: 1px solid #1890ff;
+                border: 1px solid #07c160;
                 outline: none;
             }
             
             /* 单行输入框 */
             QLineEdit {
                 background-color: #ffffff;
-                border: 1px solid #d0d7de;
+                border: 1px solid #e0e0e0;
                 border-radius: 4px;
                 padding: 8px 12px;
                 font-size: 14px;
                 color: #333333;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QLineEdit:focus {
-                border: 1px solid #1890ff;
+                border: 1px solid #07c160;
                 outline: none;
             }
             
             /* 按钮 */
             QPushButton {
-                background-color: #1890ff;
+                background-color: #07c160;
                 color: white;
                 border: none;
                 border-radius: 4px;
                 padding: 8px 16px;
                 font-size: 14px;
                 font-weight: 500;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QPushButton:hover {
-                background-color: #40a9ff;
+                background-color: #05a650;
             }
             
             QPushButton:pressed {
-                background-color: #096dd9;
+                background-color: #048b43;
             }
             
             /* 下拉框 */
             QComboBox {
                 background-color: #ffffff;
-                border: 1px solid #d0d7de;
+                border: 1px solid #e0e0e0;
                 border-radius: 4px;
                 padding: 6px 12px;
                 font-size: 14px;
                 color: #333333;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QComboBox:focus {
-                border: 1px solid #1890ff;
+                border: 1px solid #07c160;
                 outline: none;
             }
             
@@ -1044,11 +1055,11 @@ class AICADPlugin(QMainWindow):
             /* 树控件 */
             QTreeWidget {
                 background-color: #ffffff;
-                border: 1px solid #d0d7de;
+                border: 1px solid #e0e0e0;
                 border-radius: 4px;
                 font-size: 14px;
                 color: #333333;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QTreeWidget::header {
@@ -1056,7 +1067,7 @@ class AICADPlugin(QMainWindow):
                 font-weight: 500;
                 font-size: 13px;
                 color: #666666;
-                border-bottom: 1px solid #d0d7de;
+                border-bottom: 1px solid #e0e0e0;
             }
             
             QTreeWidget::item {
@@ -1064,22 +1075,22 @@ class AICADPlugin(QMainWindow):
             }
             
             QTreeWidget::item:selected {
-                background-color: #e6f7ff;
-                color: #1890ff;
+                background-color: #e8f0fe;
+                color: #1967d2;
             }
             
             QTreeWidget::item:hover {
-                background-color: #f0f0f0;
+                background-color: #e9e9e9;
             }
             
             /* 状态栏 */
             QStatusBar {
                 background-color: #f5f5f5;
                 color: #666666;
-                border-top: 1px solid #d0d7de;
+                border-top: 1px solid #e0e0e0;
                 font-size: 12px;
                 padding: 6px 12px;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             /* 分割器 */
@@ -1100,22 +1111,21 @@ class AICADPlugin(QMainWindow):
                 border: none;
                 padding: 6px 12px;
                 font-size: 14px;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
                 border-radius: 4px;
             }
             
             QToolButton:hover {
-                background-color: #f0f0f0;
+                background-color: #e9e9e9;
             }
             
             /* 菜单 */
             QMenu {
                 background-color: #ffffff;
                 color: #333333;
-                border: 1px solid #d0d7de;
+                border: 1px solid #e0e0e0;
                 border-radius: 4px;
-                font-family: 'Segoe UI', Arial, sans-serif;
-                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QMenu::item {
@@ -1124,19 +1134,18 @@ class AICADPlugin(QMainWindow):
             }
             
             QMenu::item:selected {
-                background-color: #1890ff;
+                background-color: #07c160;
                 color: white;
             }
         """
 
-        # 深色主题
+        # 深色主题 - 微信风格
         dark_qss = """
             /* 主窗口 */
             QMainWindow {
                 background-color: #1a1a1a;
                 border: 1px solid #333333;
                 border-radius: 8px;
-                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
             }
             
             /* 通用控件 */
@@ -1148,7 +1157,7 @@ class AICADPlugin(QMainWindow):
             /* 标签 */
             QLabel {
                 color: #e0e0e0;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             /* 文本编辑框 */
@@ -1159,11 +1168,11 @@ class AICADPlugin(QMainWindow):
                 padding: 10px;
                 font-size: 14px;
                 color: #e0e0e0;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QTextEdit:focus {
-                border: 1px solid #1890ff;
+                border: 1px solid #07c160;
                 outline: none;
             }
             
@@ -1175,32 +1184,32 @@ class AICADPlugin(QMainWindow):
                 padding: 8px 12px;
                 font-size: 14px;
                 color: #e0e0e0;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QLineEdit:focus {
-                border: 1px solid #1890ff;
+                border: 1px solid #07c160;
                 outline: none;
             }
             
             /* 按钮 */
             QPushButton {
-                background-color: #1890ff;
+                background-color: #07c160;
                 color: white;
                 border: none;
                 border-radius: 4px;
                 padding: 8px 16px;
                 font-size: 14px;
                 font-weight: 500;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QPushButton:hover {
-                background-color: #40a9ff;
+                background-color: #05a650;
             }
             
             QPushButton:pressed {
-                background-color: #096dd9;
+                background-color: #048b43;
             }
             
             /* 下拉框 */
@@ -1211,11 +1220,11 @@ class AICADPlugin(QMainWindow):
                 padding: 6px 12px;
                 font-size: 14px;
                 color: #e0e0e0;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QComboBox:focus {
-                border: 1px solid #1890ff;
+                border: 1px solid #07c160;
                 outline: none;
             }
             
@@ -1226,7 +1235,7 @@ class AICADPlugin(QMainWindow):
                 border-radius: 4px;
                 font-size: 14px;
                 color: #e0e0e0;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QTreeWidget::header {
@@ -1242,7 +1251,7 @@ class AICADPlugin(QMainWindow):
             }
             
             QTreeWidget::item:selected {
-                background-color: #1890ff;
+                background-color: #07c160;
                 color: white;
             }
             
@@ -1257,7 +1266,7 @@ class AICADPlugin(QMainWindow):
                 border-top: 1px solid #333333;
                 font-size: 12px;
                 padding: 6px 12px;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             /* 分割器 */
@@ -1278,7 +1287,7 @@ class AICADPlugin(QMainWindow):
                 border: none;
                 padding: 6px 12px;
                 font-size: 14px;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
                 border-radius: 4px;
             }
             
@@ -1292,8 +1301,7 @@ class AICADPlugin(QMainWindow):
                 color: #e0e0e0;
                 border: 1px solid #444444;
                 border-radius: 4px;
-                font-family: 'Segoe UI', Arial, sans-serif;
-                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             
             QMenu::item {
@@ -1302,7 +1310,7 @@ class AICADPlugin(QMainWindow):
             }
             
             QMenu::item:selected {
-                background-color: #1890ff;
+                background-color: #07c160;
                 color: white;
             }
         """

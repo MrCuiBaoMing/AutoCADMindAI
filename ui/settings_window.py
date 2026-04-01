@@ -130,10 +130,11 @@ class SettingsWindow(QDialog):
 
         self.setStyleSheet("""
             QDialog {
-                background-color: #f7f9fc;
+                background-color: #f2f2f2;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             QTabWidget::pane {
-                border: 1px solid #d8dee8;
+                border: 1px solid #e0e0e0;
                 border-radius: 8px;
                 background: #ffffff;
             }
@@ -141,53 +142,116 @@ class SettingsWindow(QDialog):
                 min-width: 96px;
                 padding: 8px 14px;
                 margin-right: 4px;
-                border: 1px solid #d8dee8;
+                border: 1px solid #e0e0e0;
                 border-bottom: none;
                 border-top-left-radius: 8px;
                 border-top-right-radius: 8px;
-                background: #eef2f7;
-                color: #334155;
+                background: #f2f2f2;
+                color: #666666;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             QTabBar::tab:selected {
                 background: #ffffff;
-                color: #1e293b;
+                color: #333333;
                 font-weight: 600;
             }
+            QTabBar::tab:hover {
+                background: #e9e9e9;
+            }
             QGroupBox {
-                border: 1px solid #d8dee8;
+                border: 1px solid #e0e0e0;
                 border-radius: 8px;
                 margin-top: 10px;
                 padding-top: 10px;
                 font-weight: 600;
-                color: #334155;
+                color: #333333;
                 background: #ffffff;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 4px;
             }
+            QLabel {
+                color: #333333;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+            }
             QLineEdit, QComboBox, QSpinBox, QListWidget {
                 min-height: 30px;
-                border: 1px solid #cfd8e3;
-                border-radius: 6px;
+                border: 1px solid #e0e0e0;
+                border-radius: 4px;
                 background: #ffffff;
                 padding: 4px 8px;
-                color: #1f2937;
+                color: #333333;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+            }
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
+                border: 1px solid #07c160;
             }
             QListWidget {
                 padding: 6px;
             }
+            QListWidget::item {
+                padding: 8px;
+                border-radius: 4px;
+            }
+            QListWidget::item:selected {
+                background-color: #e8f0fe;
+                color: #1967d2;
+            }
+            QListWidget::item:hover {
+                background-color: #e9e9e9;
+            }
             QPushButton {
                 min-height: 32px;
                 padding: 6px 14px;
-                border-radius: 6px;
-                border: 1px solid #c7d2e0;
-                background: #f8fafc;
-                color: #1f2937;
+                border-radius: 4px;
+                border: none;
+                background: #07c160;
+                color: #ffffff;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+                font-weight: 500;
             }
             QPushButton:hover {
-                background: #eef2f7;
+                background: #05a650;
+            }
+            QPushButton:pressed {
+                background: #048b43;
+            }
+            QCheckBox {
+                color: #333333;
+                font-family: 'Microsoft YaHei', Arial, sans-serif;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 1px solid #e0e0e0;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background: #07c160;
+                border: 1px solid #07c160;
+            }
+            QScrollBar:vertical {
+                width: 6px;
+                background: #f2f2f2;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c1c1c1;
+                border-radius: 3px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #a8a8a8;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
             }
         """)
     
