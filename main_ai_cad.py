@@ -466,6 +466,7 @@ class AICADPlugin(QMainWindow):
             QWidget {
                 background-color: #f2f2f2;
                 border-right: 1px solid #e0e0e0;
+                border-bottom-left-radius: 8px;
             }
         """)
         left_layout = QVBoxLayout(left_widget)
@@ -479,6 +480,7 @@ class AICADPlugin(QMainWindow):
                 background-color: #f2f2f2;
                 padding: 10px;
                 border-bottom: 1px solid #e0e0e0;
+                border-top-left-radius: 8px;
             }
         """)
         search_layout = QHBoxLayout(search_widget)
@@ -572,6 +574,7 @@ class AICADPlugin(QMainWindow):
                 background-color: #ffffff;
                 border-bottom: 1px solid #e0e0e0;
                 padding: 12px 20px;
+                border-top-right-radius: 8px;
             }
         """)
         right_title_layout = QHBoxLayout(right_title_widget)
@@ -819,6 +822,7 @@ class AICADPlugin(QMainWindow):
                 background-color: #ffffff;
                 border-top: 1px solid #e0e0e0;
                 padding: 10px 20px;
+                border-bottom-right-radius: 8px;
             }
         """)
         input_layout = QHBoxLayout(input_widget)
