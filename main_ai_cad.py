@@ -1411,13 +1411,19 @@ class AICADPlugin(QMainWindow):
         self._ignore_ai_result = False  # 新请求开始，允许接收本轮AI结果
         self._request_seq += 1
         self._active_request_id = self._request_seq
-        self.add_chat_message("用户", command)
+        
+        # 立即清空输入框并显示用户消息
         self.input_field.clear()
+        self.add_chat_message("用户", command)
+        
+        # 强制刷新 UI，确保输入框立即清空
+        QApplication.processEvents()
 
         if command.startswith("/"):
             self.execute_direct_command(command[1:])
         else:
-            self.process_with_ai(command, request_id=self._active_request_id)
+            # 使用 QTimer 延迟执行，避免阻塞 UI
+            QTimer.singleShot(10, lambda: self.process_with_ai(command, request_id=self._active_request_id))
     
     def stop_processing(self):
         """停止当前处理：1) 终止AI对话或中止网络请求 2) 取消CAD当前命令"""
@@ -1578,6 +1584,10 @@ class AICADPlugin(QMainWindow):
             self.status_label.setText("AI处理中...")
             self.update_status_bar("AI正在思考，请稍候...")
             self.add_chat_message("系统", "正在处理您的请求...")
+            
+            # 更新桥接状态，让 C# 插件知道正在处理
+            self._bridge_last_ai_seq += 1
+            self._bridge_last_ai_message = "[系统] 正在处理您的请求..."
 
             self._pending_user_message = command  # 用于收到回复后只追加 assistant 到历史
             # 发送时就把用户消息写入历史，这样即使用户点停止，下一轮"请继续"仍有上下文
@@ -2738,11 +2748,21 @@ class AICADPlugin(QMainWindow):
                             print(f"[DEBUG] 重新获取文档失败: {e}")
                     
                     if not doc_ok:
-                        self.add_chat_message("系统", "❌ AutoCAD 未打开任何图纸，请先打开一个 DWG 文件")
-                        self.add_chat_message("系统", "💡 提示：请在 AutoCAD 中打开或新建一个图纸文件，然后重试")
-                        self.is_processing = False
-                        self.set_send_button_state(False)
-                        return
+                        # 尝试自动创建新图纸
+                        self.add_chat_message("系统", "⚠️ AutoCAD 未打开任何图纸，尝试自动创建新图纸...")
+                        print("[DEBUG] 尝试自动创建新图纸...")
+                        
+                        if self.acad.create_new_document():
+                            self.add_chat_message("系统", "✅ 已自动创建新图纸，继续执行绘图命令...")
+                            print("[DEBUG] 自动创建新图纸成功")
+                            doc_ok = True
+                        else:
+                            self.add_chat_message("系统", "❌ 自动创建图纸失败，请手动在 AutoCAD 中打开或新建图纸")
+                            self.add_chat_message("系统", "💡 提示：请在 AutoCAD 中打开或新建一个图纸文件，然后重试")
+                            print("[DEBUG] 自动创建新图纸失败")
+                            self.is_processing = False
+                            self.set_send_button_state(False)
+                            return
                     
                     normalized_commands = self._normalize_drawing_commands(drawing_commands)
                     expanded_commands, expanded_count = self._expand_commands_by_count(normalized_commands, self._last_user_input)
@@ -2835,11 +2855,21 @@ class AICADPlugin(QMainWindow):
                 # 检查是否有活动文档
                 doc_ok = self.acad.ensure_document()
                 if not doc_ok:
-                    self.add_chat_message("系统", "❌ AutoCAD 未打开任何图纸，请先打开一个 DWG 文件")
-                    self.add_chat_message("系统", "💡 提示：请在 AutoCAD 中打开或新建一个图纸文件，然后重试")
-                    self.is_processing = False
-                    self.set_send_button_state(False)
-                    return
+                    # 尝试自动创建新图纸
+                    self.add_chat_message("系统", "⚠️ AutoCAD 未打开任何图纸，尝试自动创建新图纸...")
+                    print("[DEBUG] 尝试自动创建新图纸（导出功能）...")
+                    
+                    if self.acad.create_new_document():
+                        self.add_chat_message("系统", "✅ 已自动创建新图纸，继续执行导出命令...")
+                        print("[DEBUG] 自动创建新图纸成功（导出功能）")
+                        doc_ok = True
+                    else:
+                        self.add_chat_message("系统", "❌ 自动创建图纸失败，请手动在 AutoCAD 中打开或新建图纸")
+                        self.add_chat_message("系统", "💡 提示：请在 AutoCAD 中打开或新建一个图纸文件，然后重试")
+                        print("[DEBUG] 自动创建新图纸失败（导出功能）")
+                        self.is_processing = False
+                        self.set_send_button_state(False)
+                        return
                 
                 # 生成导出文件路径
                 import os
@@ -3134,6 +3164,11 @@ class AICADPlugin(QMainWindow):
         return "请求已提交到 AI，处理中..."
 
     def _bridge_chat_on_ui(self, message: str):
+        # 如果来自 C# 插件且未连接 AutoCAD，自动尝试连接
+        if not self.acad.is_connected:
+            print("[Bridge] 检测到来自 C# 插件的请求，尝试自动连接 AutoCAD...")
+            self.connect_to_acad()
+        
         self.input_field.setText(message)
         self.send_command()
 

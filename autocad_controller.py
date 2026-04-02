@@ -145,7 +145,53 @@ class AutoCADController:
             logger.warning(f"ensure_document 失败: {_format_com_error(e)}")
             self.acad_doc = None
             return False
-
+    
+    def create_new_document(self, template_path: str = None) -> bool:
+        """创建新的 AutoCAD 图纸
+        
+        Args:
+            template_path: 模板文件路径（可选）
+            
+        Returns:
+            bool: 是否成功创建新图纸
+        """
+        try:
+            logger.info("正在尝试创建新的 AutoCAD 图纸...")
+            
+            if not self.acad_app:
+                logger.error("create_new_document: acad_app 为空，无法创建新图纸")
+                return False
+            
+            # 确保在正确的 COM 线程中
+            try:
+                pythoncom.CoInitialize()
+            except Exception:
+                pass  # 可能已经初始化
+            
+            try:
+                # 创建新图纸
+                if template_path:
+                    logger.info(f"使用模板创建图纸: {template_path}")
+                    self.acad_doc = self.acad_app.Documents.Add(template_path)
+                else:
+                    logger.info("创建空白图纸")
+                    self.acad_doc = self.acad_app.Documents.Add()
+                
+                if self.acad_doc:
+                    logger.info("成功创建新图纸")
+                    return True
+                else:
+                    logger.error("创建新图纸失败: Documents.Add() 返回 None")
+                    return False
+            except Exception as e:
+                error_msg = _format_com_error(e)
+                logger.error(f"创建新图纸时发生异常: {error_msg}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"create_new_document 失败: {e}")
+            return False
+    
     def connect(self, timeout: int = 10) -> bool:
         """连接到AutoCAD实例"""
         try:

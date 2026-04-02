@@ -492,7 +492,8 @@ namespace AutoCADMindAIPlugin
 
         private static string PollLatestAiMessage()
         {
-            for (int i = 0; i < 100; i++)
+            // 增加超时时间到 60 秒，适应 AI 模型加载和复杂绘图
+            for (int i = 0; i < 300; i++)
             {
                 try
                 {
@@ -522,7 +523,11 @@ namespace AutoCADMindAIPlugin
                         if (hasNew)
                         {
                             var msg = TryExtractBridgeMessage(body);
-                            if (!string.IsNullOrWhiteSpace(msg)) return msg;
+                            // 忽略"正在处理"状态的消息，继续等待最终结果
+                            if (!string.IsNullOrWhiteSpace(msg) && !msg.Contains("正在处理"))
+                            {
+                                return msg;
+                            }
                         }
                     }
                 }
@@ -530,7 +535,9 @@ namespace AutoCADMindAIPlugin
                 {
                     // ignore
                 }
-                System.Threading.Thread.Sleep(200);
+                
+                // 动态调整轮询间隔：前 10 秒每 200ms，之后每 500ms
+                System.Threading.Thread.Sleep(i < 50 ? 200 : 500);
             }
             return null;
         }
