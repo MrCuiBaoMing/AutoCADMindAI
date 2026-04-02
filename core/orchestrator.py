@@ -420,9 +420,44 @@ class Orchestrator:
             # 使用分析prompt生成绘图计划
             analysis_prompt = CAD_ANALYSIS_PROMPT.format(user_input=user_text)
             analysis_result = self.ai_model.generate_with_context(analysis_prompt)
+            
+            # 检查返回结果
+            if not analysis_result or not analysis_result.strip():
+                print("[Orchestrator] AI 返回空结果，使用简化模式")
+                return {
+                    "success": False,
+                    "error": "AI返回空结果",
+                    "fallback": True,
+                    "user_input": user_text
+                }
 
             # 解析JSON结果
-            analysis_data = json.loads(analysis_result.strip())
+            try:
+                analysis_data = json.loads(analysis_result.strip())
+            except json.JSONDecodeError as e:
+                # 尝试从文本中提取 JSON
+                print(f"[Orchestrator] JSON 解析失败，尝试提取: {e}")
+                json_match = re.search(r'\{[\s\S]*\}', analysis_result)
+                if json_match:
+                    try:
+                        analysis_data = json.loads(json_match.group(0))
+                    except Exception:
+                        print("[Orchestrator] JSON 提取失败，使用简化模式")
+                        return {
+                            "success": False,
+                            "error": "JSON解析失败",
+                            "fallback": True,
+                            "user_input": user_text
+                        }
+                else:
+                    print("[Orchestrator] 未找到 JSON，使用简化模式")
+                    return {
+                        "success": False,
+                        "error": "未找到有效JSON",
+                        "fallback": True,
+                        "user_input": user_text
+                    }
+            
             analysis_data["context_pack"] = context_pack
             analysis_data["refined_requirement"] = refined_requirement
             analysis_data["hierarchical_plan"] = hierarchical_plan
@@ -438,7 +473,8 @@ class Orchestrator:
             return {
                 "success": False,
                 "error": str(e),
-                "fallback": True
+                "fallback": True,
+                "user_input": user_text
             }
 
     def _generate_cad_commands_from_analysis(self, analysis: Dict[str, Any]) -> List[str]:
@@ -555,6 +591,76 @@ class Orchestrator:
         except Exception as e:
             print(f"[Orchestrator] 结构化绘图命令生成失败: {e}")
         return []
+
+    def _generate_fallback_drawing_commands(self, user_text: str) -> List[Dict[str, Any]]:
+        """降级方案：当复杂分析失败时，使用简化 prompt 直接生成绘图命令"""
+        if not self.ai_model:
+            return []
+        
+        fallback_prompt = f"""你是AutoCAD绘图助手。请根据用户需求生成绘图命令。
+
+用户需求：{user_text}
+
+要求：
+1) 只输出一个JSON对象，格式：{{"drawing_commands":[...]}}
+2) 支持的命令类型：
+   - line: {{"type":"line","start":[x,y,0],"end":[x,y,0]}}
+   - circle: {{"type":"circle","center":[x,y,0],"radius":r}}
+   - rectangle: {{"type":"rectangle","corner1":[x1,y1],"corner2":[x2,y2]}}
+   - polyline: {{"type":"polyline","points":[[x1,y1],[x2,y2],...],"closed":true|false}}
+   - star: {{"type":"star","center":[x,y,0],"outer_radius":r1,"inner_radius":r2,"points":5,"start_angle":90}}
+3) 坐标使用正数，半径大于0
+4) 不要输出解释文本，只输出JSON
+
+示例：
+用户："画一个圆"
+输出：{{"drawing_commands":[{{"type":"circle","center":[0,0,0],"radius":50}}]}}
+
+用户："画一个五角星"
+输出：{{"drawing_commands":[{{"type":"star","center":[0,0,0],"outer_radius":100,"inner_radius":38.2,"points":5,"start_angle":90}}]}}
+"""
+        
+        try:
+            raw = self.ai_model.generate_with_context(fallback_prompt)
+            if not raw or not raw.strip():
+                return []
+            
+            # 提取 JSON
+            try:
+                data = json.loads(raw.strip())
+            except json.JSONDecodeError:
+                # 尝试提取 JSON
+                m = re.search(r'\{[\s\S]*\}', raw)
+                if not m:
+                    return []
+                try:
+                    data = json.loads(m.group(0))
+                except Exception:
+                    return []
+            
+            if not isinstance(data, dict):
+                return []
+            
+            commands = data.get("drawing_commands", [])
+            if not isinstance(commands, list):
+                return []
+            
+            # 验证命令
+            from core.drawing_parser import DrawingCommandParser
+            validator = DrawingCommandParser()
+            validated = []
+            for cmd in commands:
+                if not isinstance(cmd, dict):
+                    continue
+                v = validator._validate_command(cmd)
+                if v:
+                    validated.append(v)
+            
+            return validated
+        except Exception as e:
+            print(f"[Orchestrator] 降级绘图命令生成失败: {e}")
+            return []
+
 
     def handle(self, user_text: str, analysis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         effective_query = self._compose_query_with_context(user_text)
@@ -848,6 +954,17 @@ class Orchestrator:
                 }
             else:
                 print(f"[Orchestrator] CAD分析失败，使用回退模式: {analysis.get('error', '未知错误')}")
+                # 降级方案：直接使用 AI 模型生成绘图命令
+                fallback_commands = self._generate_fallback_drawing_commands(user_text)
+                if fallback_commands:
+                    return {
+                        "intent": "command_proxy",
+                        "route": "cad",
+                        "response": "已使用简化模式生成绘图命令。",
+                        "commands": [],
+                        "drawing_commands": fallback_commands,
+                        "drawing_analysis": {}
+                    }
                 return {"intent": "command_proxy", "route": "cad", "response": "绘图分析失败，使用简化模式。", "commands": [], "drawing_commands": []}
 
         if intent == "ERP_QUERY":

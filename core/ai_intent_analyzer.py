@@ -107,6 +107,32 @@ class AIIntentAnalyzer:
     def analyze(self, user_text: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         t = (user_text or "").lower()
         kb_markers = ["公司", "知识库", "文档", "流程", "规范", "cad", "中线", "手册", "标准"]
+        
+        # 绘图关键词检测
+        drawing_markers = ["画", "绘制", "创建", "生成", "画一个", "画一个圆", "画一个矩形", "画一个五角星", 
+                          "画一条线", "画一个三角形", "画一个正方形", "画一个多边形", "画一个椭圆",
+                          "绘图", "作图", "制图", "画图", "绘制图形", "创建图形", "生成图形",
+                          "circle", "rectangle", "line", "polygon", "star", "triangle", "square",
+                          "圆", "矩形", "线", "多边形", "五角星", "三角形", "正方形", "椭圆", "图形"]
+        
+        # 优先检测绘图意图
+        if any(k in t for k in drawing_markers):
+            base_intent = "command"
+            needs_web = self._detect_web_need(user_text, base_intent, context)
+            print(f"[IntentAnalyzer Debug] text='{user_text}', base_intent={base_intent} (drawing detected), needs_web={needs_web}")
+            return {
+                "intent": base_intent,
+                "needs_web": needs_web,
+                "web_keywords": self._extract_keywords(user_text, for_web=needs_web),
+                "kb_keywords": [],
+                "source": "unknown",
+                "domain_hint": "",
+                "doc_hint": "",
+                "section_hint": "",
+                "wants_full": False,
+                "need_clarify": False,
+                "clarify_question": "",
+            }
 
         # 性能优化：明显与知识库无关的普通对话，直接走 chat，避免每次都额外请求模型导致UI卡顿
         if not any(k in t for k in kb_markers):

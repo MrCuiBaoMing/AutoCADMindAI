@@ -8,6 +8,7 @@ AI CAD Plugin for AutoCAD
 import sys
 import os
 import json
+import re
 from datetime import datetime
 from typing import Dict, Any
 
@@ -2722,23 +2723,23 @@ class AICADPlugin(QMainWindow):
                     doc_ok = self.acad.ensure_document()
                     print(f"[DEBUG] 文档检查: ensure_document={doc_ok}, acad_doc={self.acad.acad_doc is not None}")
                     
-                    # 如果第一次检查失败，尝试强制重新连接一次
+                    # 如果第一次检查失败，尝试重新获取文档（不频繁 disconnect/connect）
                     if not doc_ok:
-                        print("[DEBUG] 第一次文档检查失败，尝试重新连接...")
-                        self.add_chat_message("系统", "⚠️ 检测到连接问题，正在重新连接...")
+                        print("[DEBUG] 第一次文档检查失败，尝试重新获取文档...")
                         
-                        # 尝试重新连接到 AutoCAD
-                        self.acad.disconnect()
-                        import time
-                        time.sleep(0.5)  # 短暂延迟
-                        
-                        if self.acad.connect():
-                            # 再次检查文档
-                            doc_ok = self.acad.ensure_document()
-                            print(f"[DEBUG] 重新连接后文档检查: ensure_document={doc_ok}")
+                        # 尝试重新获取 AutoCAD 应用和文档
+                        try:
+                            import win32com.client
+                            self.acad.acad_app = win32com.client.GetActiveObject("AutoCAD.Application")
+                            self.acad.acad_doc = self.acad.acad_app.ActiveDocument
+                            doc_ok = self.acad.acad_doc is not None
+                            print(f"[DEBUG] 重新获取后文档检查: doc_ok={doc_ok}")
+                        except Exception as e:
+                            print(f"[DEBUG] 重新获取文档失败: {e}")
                     
                     if not doc_ok:
                         self.add_chat_message("系统", "❌ AutoCAD 未打开任何图纸，请先打开一个 DWG 文件")
+                        self.add_chat_message("系统", "💡 提示：请在 AutoCAD 中打开或新建一个图纸文件，然后重试")
                         self.is_processing = False
                         self.set_send_button_state(False)
                         return
@@ -2835,6 +2836,7 @@ class AICADPlugin(QMainWindow):
                 doc_ok = self.acad.ensure_document()
                 if not doc_ok:
                     self.add_chat_message("系统", "❌ AutoCAD 未打开任何图纸，请先打开一个 DWG 文件")
+                    self.add_chat_message("系统", "💡 提示：请在 AutoCAD 中打开或新建一个图纸文件，然后重试")
                     self.is_processing = False
                     self.set_send_button_state(False)
                     return

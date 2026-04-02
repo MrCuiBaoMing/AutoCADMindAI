@@ -892,8 +892,8 @@ class LMStudioModel(AIModel):
             # 直接提取文本内容
             if "choices" in result and result["choices"]:
                 message = result["choices"][0].get("message", {})
-                content = message.get("content", "")
-                return content.strip()
+                content = message.get("content", "") or ""
+                return content.strip() if content else ""
             return "无法获取模型响应"
         except Exception as e:
             print(f"[LMStudioModel] generate_with_context 失败: {e}")
