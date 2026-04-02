@@ -108,17 +108,39 @@ class AutoCADController:
     def ensure_document(self) -> bool:
         """重新获取当前活动文档，避免引用失效（切换文档、停止后再次会话等）"""
         if not self.acad_app:
-            logger.warning("ensure_document: acad_app 为空")
-            return False
+            logger.warning("ensure_document: acad_app 为空，尝试重新连接...")
+            try:
+                # 尝试重新连接 AutoCAD
+                self.acad_app = win32com.client.GetActiveObject("AutoCAD.Application")
+                logger.info("ensure_document: 成功重新连接到 AutoCAD")
+            except Exception as e:
+                logger.warning(f"ensure_document: 重新连接失败: {_format_com_error(e)}")
+                return False
+        
         try:
             # 每次都重新获取活动文档，确保引用有效
-            self.acad_doc = self.acad_app.ActiveDocument
+            try:
+                self.acad_doc = self.acad_app.ActiveDocument
+            except Exception as e:
+                logger.warning(f"ensure_document: 获取 ActiveDocument 失败，尝试重新获取 AutoCAD 应用: {_format_com_error(e)}")
+                # 尝试重新获取 AutoCAD 应用
+                self.acad_app = win32com.client.GetActiveObject("AutoCAD.Application")
+                self.acad_doc = self.acad_app.ActiveDocument
+            
             if self.acad_doc is None:
                 logger.warning("ensure_document: ActiveDocument 返回 None，请先打开 DWG 图纸")
                 return False
+            
             # 额外验证：尝试访问文档属性
-            _ = self.acad_doc.Name
-            return True
+            try:
+                _ = self.acad_doc.Name
+                return True
+            except Exception as e:
+                logger.warning(f"ensure_document: 访问文档 Name 属性失败，尝试重新获取文档: {_format_com_error(e)}")
+                # 尝试重新获取文档
+                self.acad_doc = self.acad_app.ActiveDocument
+                _ = self.acad_doc.Name
+                return True
         except Exception as e:
             logger.warning(f"ensure_document 失败: {_format_com_error(e)}")
             self.acad_doc = None

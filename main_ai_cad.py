@@ -2718,9 +2718,25 @@ class AICADPlugin(QMainWindow):
                         self.set_send_button_state(False)
                         return
                     
-                    # 检查是否有活动文档
+                    # 检查是否有活动文档 - 增加重试和更宽容的处理
                     doc_ok = self.acad.ensure_document()
                     print(f"[DEBUG] 文档检查: ensure_document={doc_ok}, acad_doc={self.acad.acad_doc is not None}")
+                    
+                    # 如果第一次检查失败，尝试强制重新连接一次
+                    if not doc_ok:
+                        print("[DEBUG] 第一次文档检查失败，尝试重新连接...")
+                        self.add_chat_message("系统", "⚠️ 检测到连接问题，正在重新连接...")
+                        
+                        # 尝试重新连接到 AutoCAD
+                        self.acad.disconnect()
+                        import time
+                        time.sleep(0.5)  # 短暂延迟
+                        
+                        if self.acad.connect():
+                            # 再次检查文档
+                            doc_ok = self.acad.ensure_document()
+                            print(f"[DEBUG] 重新连接后文档检查: ensure_document={doc_ok}")
+                    
                     if not doc_ok:
                         self.add_chat_message("系统", "❌ AutoCAD 未打开任何图纸，请先打开一个 DWG 文件")
                         self.is_processing = False
