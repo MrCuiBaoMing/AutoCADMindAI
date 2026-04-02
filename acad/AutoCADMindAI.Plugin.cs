@@ -349,45 +349,74 @@ namespace AutoCADMindAIPlugin
             _aiPaletteControl?.AppendUserMessage(text);
             _aiPaletteControl?.ClearInput();
 
-            if (!EnsureBridgeReady(ed))
+            // 使用 Task.Run 在后台线程执行，避免阻塞 UI 线程
+            System.Threading.Tasks.Task.Run(() =>
             {
-                _aiPaletteControl?.SetStatus("未连接");
-                _aiPaletteControl?.AppendSystemMessage("AI 服务未连接，请先点击\"启动服务\"或检查 bridge_start.log。", true);
-                _aiPaletteControl?.SetBusy(false);
-                return;
-            }
-
-            var payload = "{\"text\":\"" + EscapeJson(text) + "\"}";
-            var body = PostJsonGetBody("/chat", payload);
-            var ackMessage = TryExtractBridgeMessage(body);
-            var ok = !string.IsNullOrWhiteSpace(body);
-
-            _aiPaletteControl?.SetStatus(ok ? "已发送" : "发送失败");
-            if (ok)
-            {
-                _aiPaletteControl?.AppendSystemMessage(string.IsNullOrWhiteSpace(ackMessage) ? "请求已提交到 AI，处理中..." : ackMessage, false);
-
-                var aiMessage = PollLatestAiMessage();
-                if (!string.IsNullOrWhiteSpace(aiMessage))
+                try
                 {
-                    _aiPaletteControl?.AppendAssistantMessage(aiMessage);
-                    _aiPaletteControl?.SetStatus("已回复");
-                }
-                else
-                {
-                    _aiPaletteControl?.AppendSystemMessage("AI 仍在处理中，请稍候再发一条或点击检测连接。", false);
-                }
-            }
-            else
-            {
-                _aiPaletteControl?.AppendSystemMessage("请求发送失败，请检查 bridge_start.log。", true);
-            }
-            _aiPaletteControl?.SetBusy(false);
+                    if (!EnsureBridgeReady(ed))
+                    {
+                        _aiPaletteControl?.Invoke(new Action(() =>
+                        {
+                            _aiPaletteControl?.SetStatus("未连接");
+                            _aiPaletteControl?.AppendSystemMessage("AI 服务未连接，请先点击\"启动服务\"或检查 bridge_start.log。", true);
+                            _aiPaletteControl?.SetBusy(false);
+                        }));
+                        return;
+                    }
 
-            if (!ok)
-            {
-                Write("发送失败，请检查 bridge_start.log。", ed);
-            }
+                    var payload = "{\"text\":\"" + EscapeJson(text) + "\"}";
+                    var body = PostJsonGetBody("/chat", payload);
+                    var ackMessage = TryExtractBridgeMessage(body);
+                    var ok = !string.IsNullOrWhiteSpace(body);
+
+                    _aiPaletteControl?.Invoke(new Action(() =>
+                    {
+                        _aiPaletteControl?.SetStatus(ok ? "已发送" : "发送失败");
+                        if (ok)
+                        {
+                            _aiPaletteControl?.AppendSystemMessage(string.IsNullOrWhiteSpace(ackMessage) ? "请求已提交到 AI，处理中..." : ackMessage, false);
+                        }
+                        else
+                        {
+                            _aiPaletteControl?.AppendSystemMessage("请求发送失败，请检查 bridge_start.log。", true);
+                            _aiPaletteControl?.SetBusy(false);
+                        }
+                    }));
+
+                    if (ok)
+                    {
+                        var aiMessage = PollLatestAiMessage();
+                        _aiPaletteControl?.Invoke(new Action(() =>
+                        {
+                            if (!string.IsNullOrWhiteSpace(aiMessage))
+                            {
+                                _aiPaletteControl?.AppendAssistantMessage(aiMessage);
+                                _aiPaletteControl?.SetStatus("已回复");
+                            }
+                            else
+                            {
+                                _aiPaletteControl?.AppendSystemMessage("AI 仍在处理中，请稍候再发一条或点击检测连接。", false);
+                            }
+                            _aiPaletteControl?.SetBusy(false);
+                        }));
+                    }
+
+                    if (!ok)
+                    {
+                        Write("发送失败，请检查 bridge_start.log。", ed);
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    _aiPaletteControl?.Invoke(new Action(() =>
+                    {
+                        _aiPaletteControl?.AppendSystemMessage($"处理请求时发生错误: {ex.Message}", true);
+                        _aiPaletteControl?.SetStatus("错误");
+                        _aiPaletteControl?.SetBusy(false);
+                    }));
+                }
+            });
         }
 
         private static void OnPaletteStopRequested()
